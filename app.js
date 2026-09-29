@@ -700,29 +700,44 @@ function openSetup(key) {
     const cfg = { sets: [...chosen], which: st.which, count: st.count, dir: st.dir };
     S.settings.last = { ...(S.settings.last || {}), [key]: cfg }; saveSettings(); startWith(key, cfg);
   }
+  function pickSet(x) {
+    if (chosen.size === allSets.length) { chosen.clear(); chosen.add(x); }   // from "all": isolate this set
+    else if (chosen.has(x)) chosen.delete(x); else chosen.add(x);
+    draw();
+  }
+  const WHICH = { all: 'Everything', smart: 'Smart mix', due: 'Due for review', weak: 'Weak words', new: 'Not studied yet' };
+  let setsText = '', sumEl = null;
+  const summaryText = () => `${setsText}  →  ${WHICH[st.which]}  →  ${effective()} of ${avail} ${avail === 1 ? 'word' : 'words'}`;
   function draw() {
+    const allOn = chosen.size === allSets.length;
+    setsText = allOn ? 'all sets' : chosen.size ? [...chosen].sort().reverse().join(' + ') : 'no sets';
     const now = Date.now(), P = S.cards.filter(c => chosen.has(c.set));
     const n = { all: P.length, smart: P.length, due: P.filter(c => L.isDue(c, now)).length, weak: P.filter(L.isWeak).length, new: P.filter(c => c.seen === 0).length };
     avail = n[st.which];
     const presets = [10, 25, 50, 100].filter(v => v < avail);
-    const custom = typeof st.count === 'number' && !presets.includes(st.count);
+    const covers = st.count === 'all' || st.count >= avail;
+    const custom = typeof st.count === 'number' && st.count < avail && !presets.includes(st.count);
     startBtn = btn(startLabel(), 'primary block', begin, { disabled: effective() === 0 });
     body.replaceChildren(...kids(
-      h('h2', null, 'Sets'),
-      h('div', { class: 'chips wrap' }, allSets.map(x => h('button', { class: 'chip' + (chosen.has(x) ? ' on' : ''), type: 'button', onclick: () => { chosen.has(x) ? chosen.delete(x) : chosen.add(x); draw(); } }, `${x} · ${S.cards.filter(c => c.set === x).length}`))),
-      h('div', { class: 'actions' }, btn('Select all', 'small', () => { allSets.forEach(x => chosen.add(x)); draw(); }), btn('Clear', 'small', () => { chosen.clear(); draw(); })),
-      h('h2', null, 'Which words'),
+      h('h2', null, '1. Sets'),
+      h('div', { class: 'chips wrap' }, [
+        h('button', { class: 'chip' + (allOn ? ' on' : ''), type: 'button', onclick: () => { allSets.forEach(x => chosen.add(x)); draw(); } }, `All sets · ${S.cards.length}`),
+        ...allSets.map(x => h('button', { class: 'chip' + (chosen.has(x) && !allOn ? ' on' : ''), type: 'button', onclick: () => pickSet(x) }, `${x} · ${S.cards.filter(c => c.set === x).length}`))]),
+      h('p', { class: 'note' }, 'Tap a set to study just that one. Tap more to combine them.'),
+      h('h2', null, '2. Which words'),
+      h('p', { class: 'note' }, `Counts below are only for: ${setsText}.`),
       h('div', { class: 'opts tight' }, [['all', 'Everything, shuffled'], ['smart', 'Smart mix (due & weak first)'], ['due', 'Due for review'], ['weak', 'Weak words'], ['new', 'Not studied yet']].map(([v, l]) =>
         h('button', { class: 'opt' + (st.which === v ? ' sel' : ''), type: 'button', onclick: () => { st.which = v; draw(); } }, l, h('small', { class: 'muted' }, '  ·  ' + n[v])))),
-      h('h2', null, 'How many'),
-      h('div', { class: 'chips wrap' }, [['all', `All (${avail})`], ...presets.map(v => [v, String(v)])].map(([v, l]) => h('button', { class: 'chip' + (st.count === v ? ' on' : ''), type: 'button', onclick: () => { st.count = v; draw(); } }, l))),
+      h('h2', null, `3. How many (of ${avail})`),
+      h('div', { class: 'chips wrap' }, [['all', `All (${avail})`], ...presets.map(v => [v, String(v)])].map(([v, l]) => h('button', { class: 'chip' + ((v === 'all' ? covers : st.count === v) ? ' on' : ''), type: 'button', onclick: () => { st.count = v; draw(); } }, l))),
       h('input', { class: 'search', type: 'number', inputMode: 'numeric', min: 1, placeholder: 'Or type a number', value: custom ? st.count : '',
-        oninput: e => { const v = parseInt(e.target.value, 10); st.count = v > 0 ? v : 'all'; startBtn.textContent = startLabel(); startBtn.disabled = effective() === 0; },
+        oninput: e => { const v = parseInt(e.target.value, 10); st.count = v > 0 ? v : 'all'; startBtn.textContent = startLabel(); startBtn.disabled = effective() === 0; sumEl.textContent = summaryText(); },
         onchange: () => draw() }),
-      dirApplies ? [h('h2', null, 'Direction'), h('div', { class: 'chips wrap' }, [['mixed', 'Mixed'], ['t2d', 'Term → definition'], ['d2t', 'Definition → term']].map(([v, l]) => h('button', { class: 'chip' + (st.dir === v ? ' on' : ''), type: 'button', onclick: () => { st.dir = v; draw(); } }, l)))] : null,
+      dirApplies ? [h('h2', null, '4. Direction'), h('div', { class: 'chips wrap' }, [['mixed', 'Mixed'], ['t2d', 'Term → definition'], ['d2t', 'Definition → term']].map(([v, l]) => h('button', { class: 'chip' + (st.dir === v ? ' on' : ''), type: 'button', onclick: () => { st.dir = v; draw(); } }, l)))] : null,
       m.ai ? h('p', { class: 'note' }, 'AI modes prepare each word with Gemini first, so smaller sessions start faster.') : null,
       avail === 0 ? h('p', { class: 'note' }, chosen.size ? 'No words match. Try another option above.' : 'Pick at least one set.') : null,
-      h('div', { style: { marginTop: '16px' } }, startBtn)));
+      (sumEl = h('div', { class: 'card note center', style: { marginTop: '16px' } }, summaryText())),
+      startBtn));
   }
   draw(); tabsEl.hidden = true;
   mount(h('div', { class: 'page' }, h('div', { class: 'row', style: { marginBottom: '6px' } }, h('button', { class: 'icon', 'aria-label': 'Back', onclick: () => go('home') }, '←'), h('h1', { style: { margin: 0 } }, m.ico + ' ' + m.name)), h('p', { class: 'muted' }, m.desc), body));
