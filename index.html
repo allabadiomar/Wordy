@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#4f46e5">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Wordy">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<title>Wordy</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="app"></main>
+<nav id="tabs" hidden>
+  <button data-go="home"><span>🏠</span>Study</button>
+  <button data-go="library"><span>📚</span>Library</button>
+  <button data-go="stats"><span>📊</span>Stats</button>
+  <button data-go="settings"><span>⚙️</span>Settings</button>
+</nav>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="logic.js"></script>
+<script src="vocab.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
