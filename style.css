@@ -191,3 +191,6 @@ html.locked #app{position:fixed;top:var(--vvtop,0px);left:50%;transform:translat
 .session .qcard.compact{padding:10px 16px}
 .session .qcard.compact .def{line-height:1.3;font-size:1.02rem}
 .session .qcard.compact .lab{margin-bottom:0}
+.session .qcard.compact .def{font-size:.96rem;line-height:1.25}
+.session .qcard.compact{min-height:0;gap:2px}
+.session .actions{margin-top:8px}

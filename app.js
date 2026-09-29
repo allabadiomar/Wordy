@@ -501,52 +501,65 @@ function runWrite(queue) {
   next();
 }
 
-function runLearn(queue) {
-  const total = queue.length; const groups = chunkBal(queue, 5, 3); let gi = 0, done = 0, correct = 0; const missed = new Map();
-  const sh = shell('Learn', total);
-  function round() {
-    sh.progress(done, total);
-    if (gi >= groups.length) return summary({ correct, total, missed: [...missed.values()], again: () => start('learn') });
-    const g = groups[gi++];
+function runLearn(queue, cfg) {
+  // Every word is asked twice per round (two "passes"). Each question is randomly multiple choice or typed
+  // (typing gets likelier on the second pass); with typing off, everything is multiple choice.
+  const typedOn = !cfg || cfg.typed !== false;
+  const total = queue.length, steps = total * 2; const groups = chunkBal(queue, 5, 3); let gi = 0, done = 0;
+  const missed = new Map(), recorded = new Set();
+  const sh = shell('Learn', steps);
+  const tag = () => groups.length > 1 ? `Round ${gi}/${groups.length} · ` : '';
+  function intro() {
+    sh.progress(0, steps);
+    const fresh = queue.some(c => c.seen === 0);
     sh.body.replaceChildren(
-      h('h2', null, g.some(c => c.seen === 0) ? 'Meet these words' : 'Quick look'),
-      h('div', { class: 'card' }, g.map(c => h('div', { class: 'intro-item' }, h('div', { class: 'row' }, h('b', null, c.term), h('button', { class: 'icon speak', type: 'button', 'aria-label': 'Hear ' + c.term, onclick: () => Pron.speak(c) }, '🔊')), h('div', null, c.def), partsView(c.ai)))),
-      btn('Start', 'primary block', () => mcPhase(g)));
-    keyHandler = e => { if (e.key === 'Enter') mcPhase(g); };
+      h('h2', null, fresh ? 'Meet these words' : 'Quick look'),
+      h('p', { class: 'muted' }, `${total} word${total === 1 ? '' : 's'} this session, practised in ${groups.length} round${groups.length === 1 ? '' : 's'} of up to 5. ` + (typedOn ? 'Questions mix multiple choice and typing.' : 'Multiple choice only.')),
+      btn('Start', 'primary block', round),
+      h('div', { class: 'card' }, queue.map(c => h('div', { class: 'intro-item' }, h('div', { class: 'row' }, h('b', null, c.term), h('button', { class: 'icon speak', type: 'button', 'aria-label': 'Hear ' + c.term, onclick: () => Pron.speak(c) }, '🔊')), h('div', null, c.def), partsView(c.ai)))));
+    keyHandler = e => { if (e.key === 'Enter') round(); };
   }
-  function mcPhase(g) {
-    const q = L.shuffle(g);
-    (function nextQ() {
-      if (!q.length) return typePhase(g);
-      const c = q[0], t2d = Math.random() < .5;
+  function round() {
+    sh.progress(done, steps);
+    if (gi >= groups.length) return summary({ correct: total - missed.size, total, missed: [...missed.values()], again: () => start('learn') });
+    const g = groups[gi++];
+    const q = [...L.shuffle(g).map(c => ({ c, pass: 1 })), ...L.shuffle(g).map(c => ({ c, pass: 2 }))];
+    ask(q);
+  }
+  // one grade per word per session: a miss anywhere counts as 0, otherwise the first try on the second pass
+  function grade(it, ok, g) {
+    const c = it.c;
+    if (!ok) { missed.set(c.id, c); if (!recorded.has(c.id)) { recorded.add(c.id); record(c, 0, 'learn'); } }
+    else if (it.pass === 2 && !it.retry && !recorded.has(c.id)) { recorded.add(c.id); record(c, g, 'learn'); }
+  }
+  function ask(q) {
+    if (!q.length) return round();
+    const it = q[0], c = it.c;
+    const done1 = (ok, g) => {
+      grade(it, ok, g); q.shift();
+      if (!ok) { it.retry = true; q.splice(Math.min(3, q.length), 0, it); }
+      else { done++; sh.progress(done, steps); }
+      ask(q);
+    };
+    if (typedOn && Math.random() < (it.pass === 1 ? .3 : .6)) {
+      renderTyped(sh.body, {
+        label: tag() + 'Type the term', prompt: h('div', { class: 'def' }, c.def), placeholder: 'Which word is this?',
+        correctText: c.term, card: c,
+        check: v => { const r = L.checkTerm(v, c.term); return { ok: r.ok, kind: r.kind, grade: r.kind === 'exact' ? 2 : 1 }; },
+        onDone: (gr, ok) => done1(ok, gr)
+      });
+    } else {
+      const t2d = Math.random() < .5;
       renderMC(sh.body, {
-        label: t2d ? 'Pick the meaning' : 'Pick the word',
+        label: tag() + (t2d ? 'Pick the meaning' : 'Pick the word'),
         prompt: h('div', { class: t2d ? 'big' : 'def' }, t2d ? c.term : c.def),
         options: t2d ? [L.shortDef(c.def, 110), ...distractors(c, 3, x => L.shortDef(x.def, 110))] : [c.term, ...distractors(c, 3)],
         answer: t2d ? L.shortDef(c.def, 110) : c.term,
-        onDone: ok => { q.shift(); if (!ok) q.push(c); nextQ(); }
+        onDone: ok => done1(ok, 1)
       });
-    })();
+    }
   }
-  function typePhase(g) {
-    const q = L.shuffle(g); const tried = new Set();
-    (function nextQ() {
-      if (!q.length) return round();
-      const c = q[0];
-      renderTyped(sh.body, {
-        label: 'Type the term', prompt: h('div', { class: 'def' }, c.def), placeholder: 'Which word is this?',
-        correctText: c.term, card: c,
-        check: v => { const r = L.checkTerm(v, c.term); return { ok: r.ok, kind: r.kind, grade: r.kind === 'exact' ? 2 : 1 }; },
-        onDone: (gr, ok) => {
-          if (!tried.has(c.id)) { tried.add(c.id); record(c, ok ? gr : 0, 'learn'); if (!ok) missed.set(c.id, c); else correct++; }
-          q.shift();
-          if (!ok) q.push(c); else { done++; sh.progress(done, total); }
-          nextQ();
-        }
-      });
-    })();
-  }
-  round();
+  intro();
 }
 
 function makeTestQ(c) {
@@ -710,7 +723,7 @@ function startWith(key, cfg) {
   if (!q.length) { toast('No words match those choices.'); return false; }
   SESSION.dir = cfg.dir || 'mixed';
   window.__wordy && (window.__wordy.lastQueue = q);
-  Pron.prefetch(q); MODES[key].run(q); return true;
+  Pron.prefetch(q); MODES[key].run(q, cfg); return true;
 }
 // "Study again" etc.: repeat with the same choices, or ask if there are none yet.
 function start(key) { const cfg = (S.settings.last || {})[key]; if (cfg && startWith(key, cfg)) return; openSetup(key); }
@@ -721,13 +734,13 @@ function openSetup(key) {
   const saved = (S.settings.last || {})[key] || {};
   const chosen = new Set((saved.sets || []).filter(x => allSets.includes(x)));
   if (!chosen.size) allSets.forEach(x => chosen.add(x));
-  const st = { which: saved.which || 'all', count: saved.count || (m.ai ? 20 : 'all'), dir: saved.dir || 'mixed' };
+  const st = { which: saved.which || 'all', count: saved.count || (m.ai ? 20 : 'all'), dir: saved.dir || 'mixed', typed: saved.typed !== false };
   const dirApplies = key === 'flash' || key === 'write';
   const body = h('div'); let startBtn = null, avail = 0;
   const effective = () => st.count === 'all' ? avail : Math.min(st.count, avail);
   const startLabel = () => `Start · ${effective()} ${effective() === 1 ? 'word' : 'words'}`;
   function begin() {
-    const cfg = { sets: [...chosen], which: st.which, count: st.count, dir: st.dir };
+    const cfg = { sets: [...chosen], which: st.which, count: st.count, dir: st.dir, typed: st.typed };
     S.settings.last = { ...(S.settings.last || {}), [key]: cfg }; saveSettings(); startWith(key, cfg);
   }
   function pickSet(x) {
@@ -764,6 +777,7 @@ function openSetup(key) {
         oninput: e => { const v = parseInt(e.target.value, 10); st.count = v > 0 ? v : 'all'; startBtn.textContent = startLabel(); startBtn.disabled = effective() === 0; sumEl.textContent = summaryText(); },
         onchange: () => draw() }),
       dirApplies ? [h('h2', null, '4. Direction'), h('div', { class: 'chips wrap' }, [['mixed', 'Mixed'], ['t2d', 'Term → definition'], ['d2t', 'Definition → term']].map(([v, l]) => h('button', { class: 'chip' + (st.dir === v ? ' on' : ''), type: 'button', onclick: () => { st.dir = v; draw(); } }, l)))] : null,
+      key === 'learn' ? [h('h2', null, '4. Question types'), h('div', { class: 'chips wrap' }, [[true, 'Multiple choice + typing'], [false, 'Multiple choice only']].map(([v, l]) => h('button', { class: 'chip' + (st.typed === v ? ' on' : ''), type: 'button', onclick: () => { st.typed = v; draw(); } }, l))), h('p', { class: 'note' }, 'Typing questions are mixed in at random, more often the second time a word comes up.')] : null,
       m.ai ? h('p', { class: 'note' }, 'AI modes prepare each word with Gemini first, so smaller sessions start faster.') : null,
       avail === 0 ? h('p', { class: 'note' }, chosen.size ? 'No words match. Try another option above.' : 'Pick at least one set.') : null,
       (sumEl = h('div', { class: 'card note center', style: { marginTop: '16px' } }, summaryText())),
