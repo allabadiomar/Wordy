@@ -1,5 +1,5 @@
 // Offline support: cache the app shell, serve from cache first, refresh in the background.
-const CACHE = 'wordy-v4';
+const CACHE = 'wordy-v5';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'logic.js', 'vocab.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

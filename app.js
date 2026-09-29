@@ -403,7 +403,10 @@ function renderTyped(body, o) {
     input.classList.add('locked', r.ok ? 'good' : 'bad');
     if (!r.ok) buzz(80);
     const title = h('b', null, r.ok ? (r.kind === 'typo' ? 'Correct (mind the spelling)' : 'Correct') : (giveUp ? 'Answer' : 'Not quite'));
-    const verdict = h('div', { class: 'result ' + (r.ok ? 'ok' : 'no') }, title, h('div', { class: 'ans' }, o.correctText), (!r.ok && v) ? h('div', { class: 'note' }, 'You wrote: ' + v) : null);
+    const speaker = o.card ? h('button', { class: 'icon speak', type: 'button', 'aria-label': 'Hear ' + o.card.term, onclick: e => { e.stopPropagation(); Pron.speak(o.card); } }, '🔊') : null;
+    const ipa = o.card ? h('span', { class: 'ipa' }, o.card.pron && o.card.pron.ipa || '') : null;
+    if (o.card && !o.card.pron) Pron.lookup(o.card).then(p => { ipa.textContent = p.ipa || ''; });
+    const verdict = h('div', { class: 'result ' + (r.ok ? 'ok' : 'no') }, h('div', { class: 'vhead' }, title, h('span', { class: 'vspeak' }, ipa, speaker)), h('div', { class: 'ans' }, o.correctText), (!r.ok && v) ? h('div', { class: 'note' }, 'You wrote: ' + v) : null, ...kids(o.extra ? o.extra() : null));
     verdictSlot.replaceChildren(verdict);
     const extras = []; let overrideBtn = null, aiBtn = null;
     const accept = label => { state = { ...state, ok: true, grade: 1 }; verdict.className = 'result ok'; title.textContent = label; overrideBtn && overrideBtn.remove(); aiBtn && aiBtn.remove(); };
@@ -423,7 +426,6 @@ function renderTyped(body, o) {
       }
     }
     acts.replaceChildren(...kids(btn('Continue', 'primary block', proceed), extras.length ? h('div', { class: 'actions', style: { marginTop: '8px' } }, extras) : null));
-    holder.append(...kids(o.extra ? o.extra() : null));
     // fallback if focus has moved off the field (desktop): Enter still continues
     keyHandler = e => { if (e.key === 'Enter' && document.activeElement !== input && Date.now() - at > 300) { e.preventDefault(); proceed(); } };
   }
@@ -486,7 +488,8 @@ function runWrite(queue) {
         return { ok: r.ok, kind: r.kind, grade: r.kind === 'exact' ? 2 : r.kind === 'typo' ? 1 : (r.score >= 0.9 ? 2 : 1) };
       },
       judge: t2d ? v => AI.judgeDef(c, v) : null,
-      extra: () => h('div', { class: 'card center' }, termLine(c, 'def'), partsView(c.ai), c.ai && c.ai.origin ? h('div', { class: 'note center' }, c.ai.origin) : null),
+      card: c,
+      extra: () => h('div', { class: 'vextra' }, partsView(c.ai), c.ai && c.ai.origin ? h('div', { class: 'note' }, c.ai.origin) : null),
       onDone: (g, ok) => {
         record(c, g, 'write'); q.shift();
         if (!ok) { missed.set(c.id, c); q.splice(Math.min(3, q.length), 0, c); }
@@ -532,7 +535,7 @@ function runLearn(queue) {
       const c = q[0];
       renderTyped(sh.body, {
         label: 'Type the term', prompt: h('div', { class: 'def' }, c.def), placeholder: 'Which word is this?',
-        correctText: c.term,
+        correctText: c.term, card: c,
         check: v => { const r = L.checkTerm(v, c.term); return { ok: r.ok, kind: r.kind, grade: r.kind === 'exact' ? 2 : 1 }; },
         onDone: (gr, ok) => {
           if (!tried.has(c.id)) { tried.add(c.id); record(c, ok ? gr : 0, 'learn'); if (!ok) missed.set(c.id, c); else correct++; }
