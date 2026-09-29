@@ -84,9 +84,20 @@ const onLeave = fn => leaveFns.push(fn);
 const later = fn => setTimeout(fn, 0);
 document.addEventListener('keydown', e => { if (keyHandler && !e.repeat && !e.metaKey && !e.ctrlKey) keyHandler(e); });
 function mount(node) {
+  document.documentElement.classList.remove('locked');
   keyHandler = null; while (leaveFns.length) { try { leaveFns.pop()(); } catch {} }
   appEl.replaceChildren(node); window.scrollTo(0, 0);
 }
+// iOS keeps the layout viewport full-height when the keyboard opens and pans the page instead.
+// Track the visible area so session screens can size themselves to it and never get panned.
+function syncViewport() {
+  const vv = window.visualViewport; if (!vv) return;
+  const r = document.documentElement.style;
+  r.setProperty('--vvh', vv.height + 'px'); r.setProperty('--vvtop', vv.offsetTop + 'px');
+}
+if (window.visualViewport) { visualViewport.addEventListener('resize', syncViewport); visualViewport.addEventListener('scroll', syncViewport); syncViewport(); }
+// Start of every question: forget the previous question's key shortcuts and scroll back to the top.
+function beginQuestion() { keyHandler = null; appEl.scrollTop = 0; window.scrollTo(0, 0); }
 const screens = { home: homeScreen, library: libraryScreen, stats: statsScreen, settings: settingsScreen };
 let currentTab = 'home';
 function go(name) {
@@ -315,12 +326,17 @@ function shell(title, total) {
   const body = h('div', { class: 'body' });
   let touched = false;
   const root = h('div', { class: 'session' },
-    h('div', { class: 'top' },
-      h('button', { class: 'icon', 'aria-label': 'End session', onclick: () => { if (!touched || confirm('End this session? Your answers so far are saved.')) go('home'); } }, '✕'),
-      h('div', { class: 'title' }, title), count),
-    h('div', { class: 'bar' }, fill), body);
-  tabsEl.hidden = true; mount(root);
-  return { body, progress(d, t) { touched = touched || d > 0; fill.style.width = (t ? Math.min(100, d / t * 100) : 0) + '%'; count.textContent = `${d}/${t}`; } };
+    h('div', { class: 'sticky' },
+      h('div', { class: 'top' },
+        h('button', { class: 'icon', 'aria-label': 'End session', onclick: () => { if (!touched || confirm('End this session? Your answers so far are saved.')) go('home'); } }, '✕'),
+        h('div', { class: 'title' }, title), count),
+      h('div', { class: 'bar' }, fill)),
+    body);
+  tabsEl.hidden = true; mount(root); document.documentElement.classList.add('locked');
+  return { body, progress(d, t, keep) {
+    if (!keep) beginQuestion();
+    touched = touched || d > 0; fill.style.width = (t ? Math.min(100, d / t * 100) : 0) + '%'; count.textContent = `${d}/${t}`;
+  } };
 }
 
 function summary({ title = 'Session complete', correct, total, missed = [], extra, again }) {
@@ -338,6 +354,7 @@ function summary({ title = 'Session complete', correct, total, missed = [], extr
 
 // Multiple choice with instant feedback. opts: {label, prompt, options:[string], answer:string, reveal?:()=>Node, onDone(ok)}
 function renderMC(body, o) {
+  beginQuestion();
   const shuffled = L.shuffle(o.options);
   const holder = h('div');
   const buttons = shuffled.map((t, i) => h('button', { class: 'opt', type: 'button', onclick: () => pick(i) }, h('b', { class: 'muted' }, (i + 1) + '  '), t));
@@ -357,48 +374,58 @@ function renderMC(body, o) {
   keyHandler = e => { const n = parseInt(e.key, 10); if (n >= 1 && n <= buttons.length) pick(n - 1); };
 }
 
-// Typed answer with check. opts: {label, prompt, placeholder, check(val)->{ok,grade,kind}, correctText, judge?:async(val)->{ok,feedback}, onDone(grade, ok)}
+// Typed answer. First Enter (or Check) marks it and shows the verdict; a second Enter (or Continue) moves on.
+// opts: {label, prompt, placeholder, multiline, check(val)->{ok,grade,kind}, correctText, judge?, extra?, onDone(grade, ok)}
 function renderTyped(body, o) {
-  const input = h(o.multiline ? 'textarea' : 'input', { class: 'answer', placeholder: o.placeholder || 'Type your answer', autocapitalize: 'off', autocomplete: 'off', autocorrect: 'off', spellcheck: false });
-  const holder = h('div');
-  const check = btn('Check', 'primary block', submit), skip = btn("I don't know", 'block', () => submit(true));
-  body.replaceChildren(h('div', { class: 'qcard' }, h('div', { class: 'lab' }, o.label), o.prompt), input, h('div', { class: 'actions' }, check, skip), holder);
-  input.focus();
-  input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
-  let state = null;
+  beginQuestion();
+  const input = h(o.multiline ? 'textarea' : 'input', { class: 'answer', placeholder: o.placeholder || 'Type your answer', autocapitalize: 'off', autocomplete: 'off', autocorrect: 'off', spellcheck: false, enterKeyHint: 'go' });
+  const verdictSlot = h('div'), acts = h('div', { class: 'actions' }), holder = h('div');
+  let state = null, at = 0, finished = false;
+  const proceed = () => { if (finished || !state) return; finished = true; o.onDone(state.grade, state.ok); };
+  acts.append(btn('Check', 'primary block', () => submit(false)), btn("I don't know", 'block', () => submit(true)));
+  body.replaceChildren(h('div', { class: 'qcard compact' }, h('div', { class: 'lab' }, o.label), o.prompt), verdictSlot, input, acts, holder);
+  input.focus({ preventScroll: true });
+  input.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+    e.preventDefault(); e.stopPropagation();
+    if (!state) submit(false); else if (Date.now() - at > 300) proceed();   // the delay ignores a double-fired Enter
+  });
+  // keep the field (and the phone keyboard) open after checking, but stop it being edited
+  input.addEventListener('beforeinput', e => { if (state) e.preventDefault(); });
+  input.addEventListener('input', () => { if (state && input.value !== state.value) input.value = state.value; });
+
   function submit(giveUp) {
     if (state) return;
     const v = input.value.trim();
-    if (!v && giveUp !== true) { input.focus(); return; }
-    const r = giveUp === true ? { ok: false, grade: 0 } : o.check(v);
-    state = { ok: r.ok, grade: r.ok ? r.grade : 0, kind: r.kind };
-    input.disabled = true; check.parentElement.remove();
+    if (!v && !giveUp) { input.focus({ preventScroll: true }); return; }
+    const r = giveUp ? { ok: false, grade: 0 } : o.check(v);
+    state = { ok: r.ok, grade: r.ok ? r.grade : 0, kind: r.kind, value: input.value }; at = Date.now();
+    input.classList.add('locked', r.ok ? 'good' : 'bad');
     if (!r.ok) buzz(80);
-    const verdict = h('div', { class: 'result ' + (r.ok ? 'ok' : 'no') },
-      h('b', null, r.ok ? (r.kind === 'typo' ? 'Correct (mind the spelling)' : 'Correct') : (giveUp === true ? 'Answer' : 'Not quite')),
-      h('div', { class: 'ans' }, o.correctText), (!r.ok && v) ? h('div', { class: 'note' }, 'You wrote: ' + v) : null);
-    const acts = h('div', { class: 'actions' });
-    const cont = btn('Continue', 'primary', () => o.onDone(state.grade, state.ok));
+    const title = h('b', null, r.ok ? (r.kind === 'typo' ? 'Correct (mind the spelling)' : 'Correct') : (giveUp ? 'Answer' : 'Not quite'));
+    const verdict = h('div', { class: 'result ' + (r.ok ? 'ok' : 'no') }, title, h('div', { class: 'ans' }, o.correctText), (!r.ok && v) ? h('div', { class: 'note' }, 'You wrote: ' + v) : null);
+    verdictSlot.replaceChildren(verdict);
+    const extras = []; let overrideBtn = null, aiBtn = null;
+    const accept = label => { state = { ...state, ok: true, grade: 1 }; verdict.className = 'result ok'; title.textContent = label; overrideBtn && overrideBtn.remove(); aiBtn && aiBtn.remove(); };
     if (!r.ok && v) {
-      acts.append(btn('I was right', 'good', () => { state = { ok: true, grade: 1, kind: 'override' }; verdict.className = 'result ok'; verdict.firstChild.textContent = 'Counted as correct'; overrideBtn.remove(); aiBtn && aiBtn.remove(); }));
+      overrideBtn = btn('I was right', 'good small', () => accept('Counted as correct'));
+      extras.push(overrideBtn);
+      if (o.judge && AI.ready()) {
+        aiBtn = btn('Ask AI ✨', 'small', async () => {
+          aiBtn.disabled = true; aiBtn.textContent = 'Thinking…';
+          try {
+            const j = await o.judge(v);
+            verdict.append(h('div', { class: 'note' }, '✨ ' + (j.feedback || '')));
+            if (j.ok) accept('AI accepted it'); else aiBtn.remove();
+          } catch (e) { aiBtn.disabled = false; aiBtn.textContent = 'Ask AI ✨'; toast(e.message); }
+        });
+        extras.push(aiBtn);
+      }
     }
-    const overrideBtn = acts.firstChild;
-    let aiBtn = null;
-    if (!r.ok && v && o.judge && AI.ready()) {
-      aiBtn = btn('Ask AI ✨', '', async () => {
-        aiBtn.disabled = true; aiBtn.textContent = 'Thinking…';
-        try {
-          const j = await o.judge(v);
-          verdict.append(h('div', { class: 'note' }, '✨ ' + (j.feedback || '')));
-          if (j.ok) { state = { ok: true, grade: 1, kind: 'ai' }; verdict.className = 'result ok'; verdict.firstChild.textContent = 'AI accepted it'; overrideBtn && overrideBtn.remove(); }
-          aiBtn.remove();
-        } catch (e) { aiBtn.disabled = false; aiBtn.textContent = 'Ask AI ✨'; toast(e.message); }
-      });
-      acts.append(aiBtn);
-    }
-    acts.append(cont);
-    holder.append(...kids(verdict, acts, o.extra ? o.extra() : null));
-    later(() => { keyHandler = e => { if (e.key === 'Enter') { e.preventDefault(); cont.click(); } }; });
+    acts.replaceChildren(...kids(btn('Continue', 'primary block', proceed), extras.length ? h('div', { class: 'actions', style: { marginTop: '8px' } }, extras) : null));
+    holder.append(...kids(o.extra ? o.extra() : null));
+    // fallback if focus has moved off the field (desktop): Enter still continues
+    keyHandler = e => { if (e.key === 'Enter' && document.activeElement !== input && Date.now() - at > 300) { e.preventDefault(); proceed(); } };
   }
 }
 
@@ -580,7 +607,7 @@ function runMatch(queue) {
       if (el.classList.contains('done')) return;
       if (!sel || sel.kind === kind) { if (sel) sel.el.classList.remove('sel'); sel = { kind, c, el }; el.classList.add('sel'); return; }
       if (sel.c.id === c.id) {
-        sel.el.classList.add('done'); el.classList.add('done'); sel = null; matched++; matchedAll++; sh.progress(matchedAll, cards.length);
+        sel.el.classList.add('done'); el.classList.add('done'); sel = null; matched++; matchedAll++; sh.progress(matchedAll, cards.length, true);
         if (matched === g.length) {
           clearInterval(iv); const t = (Date.now() - t0) / 1000; totalTime += t;
           g.forEach(x => { const m = mistakes.get(x.id); record(x, m === 0 ? 2 : m === 1 ? 1 : 0, 'match'); if (m === 0) clean++; else missed.set(x.id, x); });

@@ -167,3 +167,14 @@ textarea.answer{min-height:110px;resize:vertical}
 .opts.tight .opt{min-height:46px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between}
 .opt.sel{border-color:var(--accent);background:var(--accent-soft);font-weight:600}
 input[type=number].search{margin-top:10px}
+
+/* --- session screens: pinned to the visible area, header stays put, no page panning (fixes the iPhone keyboard jump) --- */
+html.locked, html.locked body{height:100%;overflow:hidden;overscroll-behavior:none}
+html.locked #app{position:fixed;top:var(--vvtop,0px);left:50%;transform:translateX(-50%);width:min(100%,560px);height:var(--vvh,100dvh);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:0 16px calc(env(safe-area-inset-bottom) + 16px)}
+.session .sticky{position:sticky;top:0;z-index:5;background:var(--bg);padding-top:calc(env(safe-area-inset-top) + 14px)}
+.qcard.compact{min-height:96px;padding:14px 18px;gap:4px}
+.session .result{margin-top:10px;padding:10px 14px}
+.session .verdict-gap{margin-top:8px}
+.answer.locked{opacity:.9}
+.answer.good{border-color:var(--good)}
+.answer.bad{border-color:var(--bad)}
