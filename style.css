@@ -161,3 +161,9 @@ textarea.answer{min-height:110px;resize:vertical}
 .ipa{color:var(--muted);font-size:.95rem;min-height:1.3em}
 .termline .h1{font-size:1.6rem;font-weight:800;letter-spacing:-.02em}
 .termline .def{font-weight:700}
+
+.chips.wrap{flex-wrap:wrap;overflow:visible;margin:0;padding:2px 0}
+.opts.tight{gap:8px;margin-top:0}
+.opts.tight .opt{min-height:46px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between}
+.opt.sel{border-color:var(--accent);background:var(--accent-soft);font-weight:600}
+input[type=number].search{margin-top:10px}

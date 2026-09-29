@@ -27,7 +27,7 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const DEFAULTS = { set: 'all', size: 20, newPer: 8, dir: 'mixed', focus: 'smart', apiKey: '', model: 'gemini-2.5-flash' };
+const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash' };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
 /* ---------- storage (IndexedDB, localStorage fallback) ---------- */
@@ -110,12 +110,16 @@ function sheet(content) {
 const chunk = (a, n) => { const o = []; for (let i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; };
 const fmtDur = ms => { const m = Math.max(1, Math.round(ms / 60000)); if (m < 60) return m + 'm'; const hh = Math.round(m / 60); if (hh < 24) return hh + 'h'; const d = Math.round(hh / 24); return d < 30 ? d + 'd' : Math.round(d / 30) + 'mo'; };
 const pct = n => n == null ? '–' : Math.round(n * 100) + '%';
-const pool = () => S.cards.filter(c => S.settings.set === 'all' || c.set === S.settings.set);
-const pickDir = () => S.settings.dir === 'mixed' ? (Math.random() < .5 ? 't2d' : 'd2t') : S.settings.dir;
-function makeQueue(size) {
-  const o = { newPerSession: S.settings.newPer }, f = S.settings.focus;
-  if (f === 'weak') o.weakOnly = true; if (f === 'new') o.newOnly = true; if (f === 'due') o.dueOnly = true;
-  return L.buildQueue(pool(), size || S.settings.size, o);
+const SESSION = { dir: 'mixed' };   // direction chosen on the setup screen for the current session
+const pickDir = () => SESSION.dir === 'mixed' ? (Math.random() < .5 ? 't2d' : 'd2t') : SESSION.dir;
+// Split into groups of n, folding a tiny leftover group into the previous one.
+function chunkBal(a, n, min) { const g = chunk(a, n); if (g.length > 1 && g[g.length - 1].length < min) { const last = g.pop(); g[g.length - 1].push(...last); } return g; }
+// which: all (shuffled) | smart (due & weak first) | due | weak | new
+function sessionQueue(P, which, n) {
+  if (which === 'all') return L.shuffle(P).slice(0, n);
+  const o = { newPerSession: S.settings.newPer };
+  if (which !== 'smart') o[which + 'Only'] = true;
+  return L.buildQueue(P, n, o);
 }
 function streak() {
   let n = 0, t = Date.now(); const log = S.meta.log;
@@ -228,7 +232,13 @@ const AI = {
         res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
           { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey.trim() }, body: JSON.stringify(body) });
       } catch { if (a === retries) throw new Error('Network error. Are you online?'); await sleep(800 * (a + 1)); continue; }
-      if (res.status === 429 || res.status >= 500) { if (a === retries) throw new Error('The AI is rate-limited or busy. Try again in a minute.'); await sleep(2000 * (a + 1)); continue; }
+      if (res.status === 429 || res.status >= 500) {
+        if (a === retries) {
+          const d = await res.json().catch(() => null); const m = (d && d.error && d.error.message) || '';
+          throw new Error(`Google replied ${res.status} (${res.status === 429 ? 'rate limit or quota' : 'servers busy'}). ${m}`.slice(0, 320));
+        }
+        await sleep(2000 * (a + 1)); continue;
+      }
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error((data && data.error && data.error.message) || 'AI error ' + res.status);
       const text = (((data.candidates || [])[0] || {}).content || {}).parts;
@@ -288,6 +298,7 @@ async function prepAI(cards, label) {
       if (cancelled) return false;
       await AI.enrich(grp); done += grp.length;
       msg.textContent = `Analyzed ${done} of ${missing.length} words…`;
+      if (done < missing.length) await sleep(500);
     }
   } catch (e) {
     if (cancelled) return false;
@@ -461,7 +472,7 @@ function runWrite(queue) {
 }
 
 function runLearn(queue) {
-  const total = queue.length; const groups = chunk(queue, 5); let gi = 0, done = 0, correct = 0; const missed = new Map();
+  const total = queue.length; const groups = chunkBal(queue, 5, 3); let gi = 0, done = 0, correct = 0; const missed = new Map();
   const sh = shell('Learn', total);
   function round() {
     sh.progress(done, total);
@@ -520,7 +531,7 @@ function makeTestQ(c) {
   return { c, type: 'write', prompt: c.def, label: 'Type the term', answer: c.term, show: c.term };
 }
 function runTest(queue) {
-  const size = Math.min(queue.length, S.settings.size); const qs = queue.slice(0, size).map(makeTestQ); const res = [];
+  const qs = queue.map(makeTestQ); const res = [];
   const sh = shell('Test', qs.length); let i = 0;
   function next() {
     sh.progress(i, qs.length);
@@ -556,7 +567,7 @@ function runTest(queue) {
 }
 
 function runMatch(queue) {
-  const cards = queue.slice(0, 18), groups = chunk(cards, 6); let gi = 0, matchedAll = 0, totalTime = 0, clean = 0; const missed = new Map();
+  const cards = queue, groups = chunkBal(cards, 6, 3); let gi = 0, matchedAll = 0, totalTime = 0, clean = 0; const missed = new Map();
   const sh = shell('Match', cards.length);
   function round() {
     sh.progress(matchedAll, cards.length);
@@ -630,7 +641,7 @@ async function runContext(queue) {
 
 function runUseIt(queue) {
   if (!AI.ready()) { toast('Add your Gemini API key in Settings first'); return go('settings'); }
-  const items = queue.slice(0, Math.min(queue.length, 10)); const sh = shell('Use it', items.length); let i = 0, correct = 0; const missed = [];
+  const items = queue; const sh = shell('Use it', items.length); let i = 0, correct = 0; const missed = [];
   function next() {
     sh.progress(i, items.length);
     if (i >= items.length) return summary({ correct, total: items.length, missed, again: () => start('useit') });
@@ -662,11 +673,59 @@ const MODES = {
   context: { name: 'In context', ico: '💬', desc: 'Fill the blank in a sentence', run: runContext, ai: true },
   useit: { name: 'Use it', ico: '🎯', desc: 'Write a sentence, get feedback', run: runUseIt, ai: true }
 };
-function start(key) {
-  const m = MODES[key];
-  const q = makeQueue(key === 'match' ? 18 : key === 'useit' ? 10 : S.settings.size);
-  if (!q.length) { toast('Nothing matches this focus. Try “Smart”.'); return; }
-  Pron.prefetch(q); m.run(q);
+// Build a fresh queue from a saved config and launch the mode. Returns false if nothing matches.
+function startWith(key, cfg) {
+  const sets = new Set(cfg.sets), P = S.cards.filter(c => sets.has(c.set));
+  const q = sessionQueue(P, cfg.which, cfg.count === 'all' ? P.length : cfg.count);
+  if (!q.length) { toast('No words match those choices.'); return false; }
+  SESSION.dir = cfg.dir || 'mixed';
+  window.__wordy && (window.__wordy.lastQueue = q);
+  Pron.prefetch(q); MODES[key].run(q); return true;
+}
+// "Study again" etc.: repeat with the same choices, or ask if there are none yet.
+function start(key) { const cfg = (S.settings.last || {})[key]; if (cfg && startWith(key, cfg)) return; openSetup(key); }
+
+// Pre-session screen: choose sets, which words, how many, and direction.
+function openSetup(key) {
+  const m = MODES[key], allSets = [...new Set(S.cards.map(c => c.set))].sort().reverse();
+  const saved = (S.settings.last || {})[key] || {};
+  const chosen = new Set((saved.sets || []).filter(x => allSets.includes(x)));
+  if (!chosen.size) allSets.forEach(x => chosen.add(x));
+  const st = { which: saved.which || 'all', count: saved.count || (m.ai ? 20 : 'all'), dir: saved.dir || 'mixed' };
+  const dirApplies = key === 'flash' || key === 'write';
+  const body = h('div'); let startBtn = null, avail = 0;
+  const effective = () => st.count === 'all' ? avail : Math.min(st.count, avail);
+  const startLabel = () => `Start · ${effective()} ${effective() === 1 ? 'word' : 'words'}`;
+  function begin() {
+    const cfg = { sets: [...chosen], which: st.which, count: st.count, dir: st.dir };
+    S.settings.last = { ...(S.settings.last || {}), [key]: cfg }; saveSettings(); startWith(key, cfg);
+  }
+  function draw() {
+    const now = Date.now(), P = S.cards.filter(c => chosen.has(c.set));
+    const n = { all: P.length, smart: P.length, due: P.filter(c => L.isDue(c, now)).length, weak: P.filter(L.isWeak).length, new: P.filter(c => c.seen === 0).length };
+    avail = n[st.which];
+    const presets = [10, 25, 50, 100].filter(v => v < avail);
+    const custom = typeof st.count === 'number' && !presets.includes(st.count);
+    startBtn = btn(startLabel(), 'primary block', begin, { disabled: effective() === 0 });
+    body.replaceChildren(...kids(
+      h('h2', null, 'Sets'),
+      h('div', { class: 'chips wrap' }, allSets.map(x => h('button', { class: 'chip' + (chosen.has(x) ? ' on' : ''), type: 'button', onclick: () => { chosen.has(x) ? chosen.delete(x) : chosen.add(x); draw(); } }, `${x} · ${S.cards.filter(c => c.set === x).length}`))),
+      h('div', { class: 'actions' }, btn('Select all', 'small', () => { allSets.forEach(x => chosen.add(x)); draw(); }), btn('Clear', 'small', () => { chosen.clear(); draw(); })),
+      h('h2', null, 'Which words'),
+      h('div', { class: 'opts tight' }, [['all', 'Everything, shuffled'], ['smart', 'Smart mix (due & weak first)'], ['due', 'Due for review'], ['weak', 'Weak words'], ['new', 'Not studied yet']].map(([v, l]) =>
+        h('button', { class: 'opt' + (st.which === v ? ' sel' : ''), type: 'button', onclick: () => { st.which = v; draw(); } }, l, h('small', { class: 'muted' }, '  ·  ' + n[v])))),
+      h('h2', null, 'How many'),
+      h('div', { class: 'chips wrap' }, [['all', `All (${avail})`], ...presets.map(v => [v, String(v)])].map(([v, l]) => h('button', { class: 'chip' + (st.count === v ? ' on' : ''), type: 'button', onclick: () => { st.count = v; draw(); } }, l))),
+      h('input', { class: 'search', type: 'number', inputMode: 'numeric', min: 1, placeholder: 'Or type a number', value: custom ? st.count : '',
+        oninput: e => { const v = parseInt(e.target.value, 10); st.count = v > 0 ? v : 'all'; startBtn.textContent = startLabel(); startBtn.disabled = effective() === 0; },
+        onchange: () => draw() }),
+      dirApplies ? [h('h2', null, 'Direction'), h('div', { class: 'chips wrap' }, [['mixed', 'Mixed'], ['t2d', 'Term → definition'], ['d2t', 'Definition → term']].map(([v, l]) => h('button', { class: 'chip' + (st.dir === v ? ' on' : ''), type: 'button', onclick: () => { st.dir = v; draw(); } }, l)))] : null,
+      m.ai ? h('p', { class: 'note' }, 'AI modes prepare each word with Gemini first, so smaller sessions start faster.') : null,
+      avail === 0 ? h('p', { class: 'note' }, chosen.size ? 'No words match. Try another option above.' : 'Pick at least one set.') : null,
+      h('div', { style: { marginTop: '16px' } }, startBtn)));
+  }
+  draw(); tabsEl.hidden = true;
+  mount(h('div', { class: 'page' }, h('div', { class: 'row', style: { marginBottom: '6px' } }, h('button', { class: 'icon', 'aria-label': 'Back', onclick: () => go('home') }, '←'), h('h1', { style: { margin: 0 } }, m.ico + ' ' + m.name)), h('p', { class: 'muted' }, m.desc), body));
 }
 
 /* ---------- detail sheet ---------- */
@@ -690,39 +749,37 @@ function openDetail(c, after) {
 
 /* ---------- screens ---------- */
 function homeScreen() {
-  const P = pool(), now = Date.now();
+  const P = S.cards, now = Date.now();
   const cnt = { due: P.filter(c => L.isDue(c, now)).length, weak: P.filter(L.isWeak).length, fresh: P.filter(c => c.seen === 0).length, mastered: P.filter(c => L.stateOf(c) === 'mastered').length };
-  const sets = [...new Set(S.cards.map(c => c.set))].sort().reverse();
-  const setChip = (v, label) => h('button', { class: 'chip' + (S.settings.set === v ? ' on' : ''), onclick: () => { S.settings.set = v; saveSettings(); go('home'); } }, label);
-  const focusChip = (v, label) => h('button', { class: 'chip' + (S.settings.focus === v ? ' on' : ''), onclick: () => { S.settings.focus = v; saveSettings(); go('home'); } }, label);
   const s = streak();
   return h('div', { class: 'page' },
     h('div', { class: 'head' }, h('h1', null, 'Wordy'), s ? h('span', { class: 'streak' }, '🔥 ' + s + (s === 1 ? ' day' : ' days')) : null),
-    h('div', { class: 'chips' }, setChip('all', `All · ${S.cards.length}`), sets.map(x => setChip(x, `${x} · ${S.cards.filter(c => c.set === x).length}`))),
     h('div', { class: 'tiles' },
       [['Due', cnt.due], ['New', cnt.fresh], ['Weak', cnt.weak], ['Mastered', cnt.mastered]].map(([l, n]) => h('div', { class: 'tile-stat' }, h('b', null, n), h('small', null, l)))),
-    h('div', { class: 'chips' }, focusChip('smart', 'Smart mix'), focusChip('due', `Due · ${cnt.due}`), focusChip('weak', `Weak · ${cnt.weak}`), focusChip('new', `New · ${cnt.fresh}`)),
     h('h2', null, 'Study'),
     h('div', { class: 'modes' },
-      Object.entries(MODES).map(([k, m], i) => h('button', { class: 'mode' + (i === 0 ? ' hero' : ''), onclick: () => start(k) },
-        m.ai ? h('span', { class: 'badge ai' }, 'AI') : null, h('span', { class: 'ico' }, m.ico), h('b', null, m.name), h('small', null, i === 0 ? 'Flip and self-grade · ' + Math.min(S.settings.size, P.length) + ' cards' : m.desc)))));
+      Object.entries(MODES).map(([k, m], i) => h('button', { class: 'mode' + (i === 0 ? ' hero' : ''), onclick: () => openSetup(k) },
+        m.ai ? h('span', { class: 'badge ai' }, 'AI') : null, h('span', { class: 'ico' }, m.ico), h('b', null, m.name), h('small', null, m.desc)))));
 }
 
 function libraryScreen() {
-  let q = '', f = 'all';
+  let q = '', f = 'all', setF = 'all';
   const list = h('div');
+  const setChips = h('div', { class: 'chips' });
   const filters = ['all', 'new', 'learning', 'reviewing', 'mastered', 'weak'];
   const chips = h('div', { class: 'chips' });
   const search = h('input', { class: 'search', type: 'search', placeholder: 'Search terms or meanings', oninput: e => { q = e.target.value.toLowerCase(); draw(); } });
+  const libSets = [...new Set(S.cards.map(c => c.set))].sort().reverse();
   function draw() {
+    setChips.replaceChildren(...['all', ...libSets].map(x => h('button', { class: 'chip' + (setF === x ? ' on' : ''), onclick: () => { setF = x; draw(); } }, x === 'all' ? 'All sets' : x)));
     chips.replaceChildren(...filters.map(x => h('button', { class: 'chip' + (f === x ? ' on' : ''), onclick: () => { f = x; draw(); } }, x[0].toUpperCase() + x.slice(1))));
-    const rows = pool().filter(c => (!q || c.term.toLowerCase().includes(q) || c.def.toLowerCase().includes(q)) && (f === 'all' || (f === 'weak' ? L.isWeak(c) : L.stateOf(c) === f))).sort((a, b) => a.term.localeCompare(b.term));
+    const rows = S.cards.filter(c => (setF === 'all' || c.set === setF) && (!q || c.term.toLowerCase().includes(q) || c.def.toLowerCase().includes(q)) && (f === 'all' || (f === 'weak' ? L.isWeak(c) : L.stateOf(c) === f))).sort((a, b) => a.term.localeCompare(b.term));
     list.replaceChildren(h('p', { class: 'muted' }, rows.length + (rows.length === 1 ? ' term' : ' terms')), ...rows.slice(0, 300).map(c => h('button', { class: 'item', onclick: () => openDetail(c, draw) },
       h('div', { class: 'grow' }, h('b', null, c.term), h('small', { class: 'muted' }, L.shortDef(c.def, 90))), h('span', { class: 'badge ' + L.stateOf(c) }, L.stateOf(c)))));
     if (rows.length > 300) list.append(h('p', { class: 'muted center' }, 'Refine your search to see more'));
   }
   draw();
-  return h('div', { class: 'page' }, h('h1', null, 'Library'), search, chips, list);
+  return h('div', { class: 'page' }, h('h1', null, 'Library'), search, setChips, chips, list);
 }
 
 function statsScreen() {
@@ -774,10 +831,9 @@ function settingsScreen() {
     catch { toast('That file is not a Wordy backup'); }
   } });
   return h('div', { class: 'page' }, h('h1', null, 'Settings'),
-    h('div', { class: 'card' }, h('h3', null, 'Sessions'),
-      sel('Cards per session', 'size', [[10, '10'], [20, '20'], [30, '30'], [50, '50']], true),
-      sel('New words per session', 'newPer', [[0, '0'], [4, '4'], [8, '8'], [12, '12']], true),
-      sel('Direction', 'dir', [['mixed', 'Mixed'], ['t2d', 'Term → definition'], ['d2t', 'Definition → term']])),
+    h('div', { class: 'card' }, h('h3', null, 'Smart mix'),
+      h('p', { class: 'note' }, 'Session size, sets and direction are chosen each time you start a mode.'),
+      sel('New words mixed into a Smart session', 'newPer', [[0, '0'], [4, '4'], [8, '8'], [12, '12'], [20, '20']], true)),
     h('div', { class: 'card' }, h('h3', null, 'AI (Gemini) ✨'),
       h('p', { class: 'note' }, 'Powers Roots, In context, Use it, and “Ask AI”. Your key stays on this device and is sent only to Google. Get a free key at aistudio.google.com/apikey.'),
       h('label', { class: 'field' }, h('span', null, 'API key'), h('input', { type: 'password', value: S.settings.apiKey, placeholder: 'AIza…', autocomplete: 'off', onchange: e => set('apiKey', e.target.value.trim()) })),
@@ -807,9 +863,8 @@ function settingsScreen() {
   if (!S.cards.length && typeof SEED_TEXT === 'string') {
     const r = L.mergeImport([], L.parseVocab(SEED_TEXT)); S.cards = r.cards; await Store.replaceAll(S.cards); setTimeout(() => toast(`Loaded ${r.added} terms`), 400);
   }
-  if (S.settings.set !== 'all' && !S.cards.some(c => c.set === S.settings.set)) S.settings.set = 'all';
   go('home');
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   setTimeout(() => Pron.crawl(), 3000);
-  window.__wordy = { S, L, Store, AI, Pron, start, go };
+  window.__wordy = { S, L, Store, AI, Pron, start, startWith, openSetup, go };
 })();
