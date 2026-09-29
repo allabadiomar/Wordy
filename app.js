@@ -163,8 +163,20 @@ const Pron = {
     })().finally(() => this.inflight.delete(c.id));
     this.inflight.set(c.id, p); return p;
   },
+  voice: null,
+  // Prefer the best installed US English voice (premium/enhanced/Siri/neural, then Google) over the default.
+  pickVoice() {
+    try {
+      const novelty = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Fred|Good News|Hysterical|Jester|Junior|Kathy|Organ|Pipe Organ|Ralph|Superstar|Trinoids|Whisper|Wobble|Zarvox)/i;
+      const score = v => /premium|enhanced|siri|neural|natural/i.test(v.name) ? 3 : /google/i.test(v.name) ? 2 : v.localService ? 1 : 0;
+      this.voice = speechSynthesis.getVoices().filter(v => /^en[-_]US/i.test(v.lang) && !novelty.test(v.name)).sort((a, b) => score(b) - score(a))[0] || null;
+    } catch { this.voice = null; }
+  },
   say(text) {
-    try { const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; u.rate = 0.9; speechSynthesis.cancel(); speechSynthesis.speak(u); return true; } catch { return false; }
+    try {
+      const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; u.rate = 0.9; if (this.voice) u.voice = this.voice;
+      speechSynthesis.cancel(); speechSynthesis.speak(u); return true;
+    } catch { return false; }
   },
   // Must start playing inside the tap (iOS blocks audio started after an await), so use what is cached
   // right now and fetch in the background for next time.
@@ -177,9 +189,23 @@ const Pron = {
   prefetch(cards) {
     const todo = cards.filter(c => !c.pron); let i = 0;
     const worker = async () => { while (i < todo.length) await this.lookup(todo[i++]); };
-    worker(); worker();
+    worker(); worker(); worker();
+  },
+  // Slowly cache pronunciations for every word in the background so taps find a recording ready.
+  crawling: false, gap: 600,
+  async crawl() {
+    if (this.crawling) return; this.crawling = true; let fails = 0;
+    for (const c of S.cards) {
+      if (c.pron) continue;
+      if (!navigator.onLine || fails >= 3) break;   // offline or rate-limited: try again next launch
+      await this.lookup(c);
+      fails = c.pron ? 0 : fails + 1;
+      await sleep(this.gap);
+    }
+    this.crawling = false;
   }
 };
+try { speechSynthesis.addEventListener('voiceschanged', () => Pron.pickVoice()); Pron.pickVoice(); } catch {}
 // A term with a speaker button and (once known) its phonetic spelling.
 function termLine(c, cls = 'big') {
   const ipa = h('div', { class: 'ipa' }, c.pron && c.pron.ipa || '');
@@ -762,6 +788,8 @@ function settingsScreen() {
       h('p', { class: 'note' }, 'Re-importing matches on set + term: new words are added, changed definitions updated, and your progress is kept. Formats: “12. term - definition”, “term | definition”, or tab-separated, with “# Vocabulary Set: 2027” headers to name sets.'),
       h('div', { class: 'actions' }, btn('Import .txt file', 'primary', () => file.click())), file,
       h('label', { class: 'field' }, h('span', null, 'Or paste terms'), paste), btn('Import pasted text', 'small', () => importText(paste.value))),
+    h('div', { class: 'card' }, h('h3', null, 'Pronunciation'),
+      h('p', { class: 'note' }, `Recordings saved on this device: ${S.cards.filter(c => c.pron && c.pron.audio).length} of ${S.cards.length} words. Words without a recording use your phone's built-in voice. Wordy fetches the rest slowly in the background while you're online.`)),
     h('div', { class: 'card' }, h('h3', null, 'Backup'),
       h('p', { class: 'note' }, Store.persistent ? 'Progress is saved on this device. Export a backup now and then, especially before clearing browser data.' : 'Warning: this browser blocked IndexedDB, so progress is saved in a fallback that may be cleared.'),
       h('div', { class: 'actions' }, btn('Export backup', '', () => download('wordy-backup-' + L.dayKey() + '.json', JSON.stringify({ v: 1, cards: S.cards, meta: S.meta }))), btn('Restore backup', '', () => bfile.click())), bfile,
@@ -782,5 +810,6 @@ function settingsScreen() {
   if (S.settings.set !== 'all' && !S.cards.some(c => c.set === S.settings.set)) S.settings.set = 'all';
   go('home');
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-  window.__wordy = { S, L, Store, AI, start, go };
+  setTimeout(() => Pron.crawl(), 3000);
+  window.__wordy = { S, L, Store, AI, Pron, start, go };
 })();
