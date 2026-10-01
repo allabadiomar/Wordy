@@ -27,7 +27,8 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash' };
+const APP_VERSION = 'v8';
+const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash', fallbacks: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'] };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
 /* ---------- storage (IndexedDB, localStorage fallback) ---------- */
@@ -233,29 +234,63 @@ function termLine(c, cls = 'big') {
 /* ---------- AI (Gemini via REST, key stored on this device only) ---------- */
 const AI = {
   ready: () => !!S.settings.apiKey.trim(),
-  async call(prompt, { temperature = 0.3, retries = 3 } = {}) {
-    const { apiKey, model } = S.settings;
+  cool: {},       // model -> time until which it is skipped after failing (busy or missing)
+  used: '',       // the model that answered last
+  // Models to try, in order: the main model, then the fallbacks.
+  chain() {
+    const s = S.settings, fb = Array.isArray(s.fallbacks) ? s.fallbacks : DEFAULTS.fallbacks;
+    return [...new Set([s.model, ...fb].map(x => String(x || '').trim()).filter(Boolean))];
+  },
+  // One request to one model. Never throws; returns {ok, status, data, message}.
+  async once(model, prompt, temperature = 0.3) {
     const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature, responseMimeType: 'application/json' } };
     if (/2\.5/.test(model)) body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
-    for (let a = 0; a <= retries; a++) {
-      let res;
-      try {
-        res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
-          { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey.trim() }, body: JSON.stringify(body) });
-      } catch { if (a === retries) throw new Error('Network error. Are you online?'); await sleep(800 * (a + 1)); continue; }
-      if (res.status === 429 || res.status >= 500) {
-        if (a === retries) {
-          const d = await res.json().catch(() => null); const m = (d && d.error && d.error.message) || '';
-          throw new Error(`Google replied ${res.status} (${res.status === 429 ? 'rate limit or quota' : 'servers busy'}). ${m}`.slice(0, 320));
+    let res;
+    try {
+      res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
+        { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S.settings.apiKey.trim() }, body: JSON.stringify(body) });
+    } catch { return { ok: false, status: 0, message: 'network' }; }
+    const data = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, data, message: (data && data.error && data.error.message) || '' };
+  },
+  parse(data) {
+    const parts = (((data && data.candidates || [])[0] || {}).content || {}).parts;
+    const raw = (parts || []).map(p => p.text || '').join('').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    try { return { ok: true, value: JSON.parse(raw) }; } catch { return { ok: false }; }
+  },
+  // Ask the AI for JSON. Tries each model in the chain: one quick retry when busy, then on to the next model.
+  async call(prompt, { temperature = 0.3 } = {}) {
+    const chain = AI.chain(), now = Date.now();
+    let order = chain.filter(m => !(AI.cool[m] > now)); if (!order.length) order = chain;
+    const fails = [];
+    for (const model of order) {
+      for (let a = 0; a < 2; a++) {
+        const r = await AI.once(model, prompt, temperature);
+        if (r.status === 0) throw new Error('Network error. Are you online?');
+        if (r.ok) {
+          const p = AI.parse(r.data);
+          if (p.ok) { AI.used = model; delete AI.cool[model]; return p.value; }
+          if (a === 1) { fails.push(`${model}: unreadable reply`); break; }
+          continue;
         }
-        await sleep(2000 * (a + 1)); continue;
+        if (r.status === 401 || r.status === 403 || (r.status === 400 && /api key/i.test(r.message))) throw new Error('Google rejected the API key. Check it in Settings. ' + r.message.slice(0, 120));
+        if (r.status === 429 || r.status >= 500) {
+          if (a === 0) { await sleep(1200); continue; }
+          AI.cool[model] = Date.now() + 3 * 60000; fails.push(`${model}: ${r.status} ${r.status === 429 ? 'rate limit' : 'busy'}`); break;
+        }
+        AI.cool[model] = Date.now() + 30 * 60000; fails.push(`${model}: ${r.status === 404 ? 'not available' : r.status}`); break;   // 404 etc: this model is no use, go on
       }
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error((data && data.error && data.error.message) || 'AI error ' + res.status);
-      const text = (((data.candidates || [])[0] || {}).content || {}).parts;
-      const raw = (text || []).map(p => p.text || '').join('').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-      try { return JSON.parse(raw); } catch { if (a === retries) throw new Error('The AI returned something unreadable. Try again.'); }
     }
+    throw new Error(`Google didn't answer (${fails.join('; ')}). Try again in a minute.`.slice(0, 380));
+  },
+  // For the Settings test: a single try per model with timing.
+  async probe(model) {
+    const t = Date.now(), r = await AI.once(model, 'Reply with JSON {"ok": true}', 0);
+    const ms = Date.now() - t;
+    if (r.status === 0) return { model, ok: false, note: 'no connection', ms };
+    if (r.ok) return { model, ok: !!AI.parse(r.data).ok, note: AI.parse(r.data).ok ? 'works' : 'unreadable reply', ms };
+    const key = r.status === 401 || r.status === 403 || (r.status === 400 && /api key/i.test(r.message));
+    return { model, ok: false, note: key ? 'key rejected' : r.status === 404 ? 'not available to you' : r.status === 429 ? 'rate limited' : r.status >= 500 ? 'busy (' + r.status + ')' : 'error ' + r.status, ms };
   },
   async enrich(cards) {
     const list = cards.map(c => `- ${c.term}: ${c.def}`).join('\n');
@@ -876,6 +911,7 @@ async function importText(text) {
 }
 function settingsScreen() {
   const set = (k, v) => { S.settings[k] = v; saveSettings(); };
+  let modelInput = null; const testBox = h('div');
   const sel = (label, key, opts, num) => h('label', { class: 'field' }, h('span', null, label), h('select', { onchange: e => set(key, num ? +e.target.value : e.target.value) }, opts.map(([v, l]) => h('option', { value: v, selected: String(S.settings[key]) === String(v) }, l))));
   const aiCount = S.cards.filter(c => c.ai).length;
   const enrichBtn = btn(`Analyze all words with AI (${S.cards.length - aiCount} left)`, 'block', async () => {
@@ -898,10 +934,23 @@ function settingsScreen() {
       h('p', { class: 'note' }, 'Session size, sets and direction are chosen each time you start a mode.'),
       sel('New words mixed into a Smart session', 'newPer', [[0, '0'], [4, '4'], [8, '8'], [12, '12'], [20, '20']], true)),
     h('div', { class: 'card' }, h('h3', null, 'AI (Gemini) ✨'),
-      h('p', { class: 'note' }, 'Powers Roots, In context, Use it, and “Ask AI”. Your key stays on this device and is sent only to Google. Get a free key at aistudio.google.com/apikey.'),
+      h('p', { class: 'note' }, 'Powers “Use it” and the “Ask AI” button, and can analyse words you add. Your key stays on this device and is sent only to Google. Get a free key at aistudio.google.com/apikey. If the main model is busy, the fallbacks are tried in order.'),
       h('label', { class: 'field' }, h('span', null, 'API key'), h('input', { type: 'password', value: S.settings.apiKey, placeholder: 'AIza…', autocomplete: 'off', onchange: e => set('apiKey', e.target.value.trim()) })),
-      h('label', { class: 'field' }, h('span', null, 'Model'), h('input', { value: S.settings.model, autocapitalize: 'off', onchange: e => set('model', e.target.value.trim() || DEFAULTS.model) })),
-      h('div', { class: 'actions' }, btn('Test connection', 'small', async e => { e.target.disabled = true; try { const r = await AI.call('Reply with JSON {"ok": true}', { retries: 1 }); toast(r && r.ok ? 'Connected ✓' : 'Unexpected reply'); } catch (er) { toast(er.message); } e.target.disabled = false; })),
+      h('label', { class: 'field' }, h('span', null, 'Main model'), modelInput = h('input', { value: S.settings.model, autocapitalize: 'off', onchange: e => set('model', e.target.value.trim() || DEFAULTS.model) })),
+      h('label', { class: 'field' }, h('span', null, 'Fallback models, in order (comma separated)'), h('input', { value: AI.chain().slice(1).join(', '), autocapitalize: 'off', onchange: e => set('fallbacks', e.target.value.split(',').map(x => x.trim()).filter(Boolean)) })),
+      h('div', { class: 'actions' }, btn('Test models', 'small', async e => {
+        if (!AI.ready()) return toast('Add your API key first');
+        const b = e.target; b.disabled = true; testBox.replaceChildren(h('p', { class: 'note' }, 'Testing…'));
+        const rows = [];
+        for (const m of AI.chain()) {
+          const r = await AI.probe(m); rows.push(r);
+          testBox.replaceChildren(...rows.map(x => h('div', { class: 'row between', style: { padding: '6px 0' } },
+            h('span', null, (x.ok ? '✅ ' : '❌ ') + x.model), h('small', { class: 'muted' }, `${x.note} · ${(x.ms / 1000).toFixed(1)}s`),
+            x.ok ? h('button', { class: 'btn small', type: 'button', onclick: () => { S.settings.model = x.model; saveSettings(); modelInput.value = x.model; toast(x.model + ' is now the main model'); } }, 'Use first') : null)));
+          if (r.note === 'key rejected') break;
+        }
+        b.disabled = false;
+      })), testBox,
       enrichBtn),
     h('div', { class: 'card' }, h('h3', null, 'Vocabulary'),
       h('p', { class: 'note' }, 'Re-importing matches on set + term: new words are added, changed definitions updated, and your progress is kept. Formats: “12. term - definition”, “term | definition”, or tab-separated, with “# Vocabulary Set: 2027” headers to name sets.'),
@@ -909,6 +958,15 @@ function settingsScreen() {
       h('label', { class: 'field' }, h('span', null, 'Or paste terms'), paste), btn('Import pasted text', 'small', () => importText(paste.value))),
     h('div', { class: 'card' }, h('h3', null, 'Pronunciation'),
       h('p', { class: 'note' }, `Recordings saved on this device: ${S.cards.filter(c => c.pron && c.pron.audio).length} of ${S.cards.length} words. Words without a recording use your phone's built-in voice. Wordy fetches the rest slowly in the background while you're online.`)),
+    h('div', { class: 'card' }, h('h3', null, 'App version'),
+      h('p', { class: 'note' }, 'Version ' + APP_VERSION + '. If a GitHub update doesn’t show up, tap Update app: it clears the saved copy and reloads (your words and progress are kept).'),
+      btn('Update app', 'block', async () => {
+        try {
+          if ('serviceWorker' in navigator) for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+          if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+        } catch {}
+        location.replace(location.pathname + '?u=' + Date.now());
+      })),
     h('div', { class: 'card' }, h('h3', null, 'Backup'),
       h('p', { class: 'note' }, Store.persistent ? 'Progress is saved on this device. Export a backup now and then, especially before clearing browser data.' : 'Warning: this browser blocked IndexedDB, so progress is saved in a fallback that may be cleared.'),
       h('div', { class: 'actions' }, btn('Export backup', '', () => download('wordy-backup-' + L.dayKey() + '.json', JSON.stringify({ v: 2, cards: S.cards, meta: S.meta, parts: S.partsProg }))), btn('Restore backup', '', () => bfile.click())), bfile,
@@ -943,7 +1001,7 @@ function applyBundledAnalysis() {
   applyBundledAnalysis();
   initParts(await Store.getKV('partsProgress', {}));
   go('home');
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {});
   setTimeout(() => Pron.crawl(), 3000);
   window.__wordy = { S, L, Store, AI, Pron, start, startWith, openSetup, go };
 })();
