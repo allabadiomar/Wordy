@@ -27,7 +27,7 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash', fallbacks: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'] };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
@@ -99,11 +99,12 @@ function syncViewport() {
 if (window.visualViewport) { visualViewport.addEventListener('resize', syncViewport); visualViewport.addEventListener('scroll', syncViewport); syncViewport(); }
 // Start of every question: forget the previous question's key shortcuts and scroll back to the top.
 function beginQuestion() { keyHandler = null; appEl.scrollTop = 0; window.scrollTo(0, 0); }
-const screens = { home: homeScreen, library: libraryScreen, stats: statsScreen, settings: settingsScreen, set: () => setScreen() };
+const screens = { home: homeScreen, library: libraryScreen, stats: statsScreen, settings: settingsScreen, set: () => setScreen(), sets: () => setsScreen() };
 let currentTab = 'home';
 function go(name) {
   currentTab = name; tabsEl.hidden = false;
-  tabsEl.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.go === name));
+  const tabName = (name === 'set' || name === 'sets') ? 'library' : name;
+  tabsEl.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.go === tabName));
   mount(screens[name]());
 }
 tabsEl.addEventListener('click', e => { const b = e.target.closest('button[data-go]'); if (b) go(b.dataset.go); });
@@ -940,7 +941,7 @@ function openWordEditor({ card = null, set = '', after } = {}) {
       btn('Cancel', 'small', () => close())));
   close = sheet(body); if (!card) term.focus();
 }
-const TRASH_SVG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#c0392b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/><path d="M10 11v6M14 11v6"/></svg>';
+const TRASH_SVG = '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/><path d="M10 11v6M14 11v6"/></svg>';
 // "Export ▾" button that opens a small menu with .txt / .tsv. name = null exports every set (.txt only).
 function exportMenu(name, cls = 'small') {
   const menu = h('div', { class: 'menu' }, ...(name ? ['txt', 'tsv'] : ['txt']).map(f => h('button', { class: 'menuitem', type: 'button', onclick: e => { e.stopPropagation(); menu.hidden = true; exportSet(name, f); } }, name ? 'As .' + f : 'All sets as .txt')));
@@ -949,24 +950,59 @@ function exportMenu(name, cls = 'small') {
   return h('div', { class: 'menuwrap' }, trigger, menu);
 }
 addEventListener('click', () => document.querySelectorAll('.menu').forEach(m => { m.hidden = true; }));
-function openSetManager(after) {
-  const box = h('div'); let close;
+// Swipe-left-to-delete row: a red trash action sits behind the card and is revealed by dragging the card left.
+const SWIPE_W = 84;
+function swipeRow(front, onDelete) {
+  const del = h('button', { class: 'sdel', type: 'button', 'aria-label': 'Delete set', onclick: e => { e.stopPropagation(); onDelete(); } });
+  del.innerHTML = TRASH_SVG;
+  const wrap = h('div', { class: 'swrap' }, del, front);
+  let x0 = 0, y0 = 0, base = 0, off = 0, mode = '', id = null, open = false, justDragged = false;
+  const setOff = (v, anim) => { off = v; front.style.transition = anim ? 'transform .18s ease' : 'none'; front.style.transform = v ? `translateX(${v}px)` : ''; };
+  const close = () => { open = false; wrap.classList.remove('open'); setOff(0, true); };
+  wrap.__close = close;
+  front.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    document.querySelectorAll('.swrap.open').forEach(w => { if (w !== wrap) w.__close(); });
+    x0 = e.clientX; y0 = e.clientY; base = open ? -SWIPE_W : 0; mode = ''; id = e.pointerId;
+  });
+  front.addEventListener('pointermove', e => {
+    if (e.pointerId !== id) return;
+    const dx = e.clientX - x0, dy = e.clientY - y0;
+    if (!mode) { if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { mode = 'v'; return; } if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) { mode = 'h'; try { front.setPointerCapture(id); } catch {} } }
+    if (mode === 'h') setOff(Math.max(-SWIPE_W - 14, Math.min(0, base + dx)), false);
+  });
+  const end = e => {
+    if (e.pointerId !== id) return; id = null;
+    if (mode === 'h') { justDragged = true; setTimeout(() => { justDragged = false; }, 60); open = off < -SWIPE_W / 2; wrap.classList.toggle('open', open); setOff(open ? -SWIPE_W : 0, true); }
+  };
+  front.addEventListener('pointerup', end); front.addEventListener('pointercancel', end);
+  front.addEventListener('click', e => { if (justDragged) { e.stopPropagation(); e.preventDefault(); } else if (open) { e.stopPropagation(); e.preventDefault(); close(); } }, true);
+  return wrap;
+}
+document.addEventListener('pointerdown', e => { if (!e.target.closest || !e.target.closest('.swrap')) document.querySelectorAll('.swrap.open').forEach(w => w.__close()); });
+
+let setBack = 'library';   // where the set page's back button returns to
+// Manage sets: a full page (not a pop-up).
+function setsScreen() {
+  const list = h('div');
   function draw() {
     const names = setNames();
-    box.replaceChildren(...kids(
-      h('div', { class: 'shead' }, h('h2', { style: { margin: 0 } }, 'Manage sets'), h('button', { class: 'xbtn', type: 'button', 'aria-label': 'Close', onclick: () => { close(); after && after(); } }, '✕')),
-      h('div', { class: 'actions' }, btn('＋ New set', 'primary small', () => { close(); openWordEditor({ set: '', after }); }), exportMenu(null)),
-      names.length ? null : h('p', { class: 'muted' }, 'No sets yet.'),
+    list.replaceChildren(...kids(
+      names.length ? h('p', { class: 'muted', style: { margin: '2px 0 10px' } }, 'Swipe a set left to delete it.') : h('p', { class: 'muted' }, 'No sets yet.'),
       names.map(n => {
         const cards = S.cards.filter(c => c.set === n);
-        const trash = h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Delete set ' + n, onclick: async () => { if (!confirm(`Delete the set “${n}” and its ${cards.length} word${cards.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(cards, `Set “${n}”`); draw(); after && after(); } });
-        trash.innerHTML = TRASH_SVG;
-        return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('b', null, n), h('small', { class: 'muted' }, cards.length + (cards.length === 1 ? ' word' : ' words'))),
-          h('div', { class: 'setfoot' }, trash, h('span', { class: 'grow' }), btn('Edit', 'primary small', () => { close(); viewSet = n; go('set'); }), exportMenu(n)));
+        const front = h('div', { class: 'card sfront' }, h('div', { class: 'row between' }, h('b', null, n), h('small', { class: 'muted' }, cards.length + (cards.length === 1 ? ' word' : ' words'))),
+          h('div', { class: 'setfoot' }, h('span', { class: 'grow' }), btn('Edit', 'primary small', () => { viewSet = n; setBack = 'sets'; go('set'); }), exportMenu(n)));
+        return swipeRow(front, async () => { if (!confirm(`Delete the set “${n}” and its ${cards.length} word${cards.length === 1 ? '' : 's'}, with their progress?`)) { document.querySelectorAll('.swrap.open').forEach(w => w.__close()); return; } await deleteCards(cards, `Set “${n}”`); draw(); });
       })));
   }
-  draw(); close = sheet(box);
+  draw();
+  return h('div', { class: 'page' },
+    h('div', { class: 'pagehead' }, btn('‹ Library', 'small', () => go('library')), h('h1', { style: { margin: 0, fontSize: '1.3rem' } }, 'Manage sets'), h('span', { style: { width: '78px' } })),
+    h('div', { class: 'actions' }, btn('＋ New set', 'primary small', () => openWordEditor({ set: '', after: () => go('sets') })), exportMenu(null)),
+    list);
 }
+
 // Move cards to another set (progress and AI data kept; term/definition unchanged). Words whose term already exists in the target are skipped.
 async function moveCards(cards, raw) {
   const target = cleanText(raw); if (!target) return { error: 'Choose or name a set' };
@@ -1011,7 +1047,7 @@ function setScreen() {
         btn('＋ Add word', 'primary small', () => openWordEditor({ set: viewSet, after: draw })),
         btn(selecting ? 'Done selecting' : 'Select', 'small', () => { selecting = !selecting; picked.clear(); draw(); }),
         btn('Rename', 'small', rename), exportMenu(viewSet),
-        btn('Delete set', 'bad small', async () => { if (!confirm(`Delete the set “${viewSet}” and its ${all.length} word${all.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(all, `Set “${viewSet}”`); go('library'); })));
+        btn('Delete set', 'bad small', async () => { if (!confirm(`Delete the set “${viewSet}” and its ${all.length} word${all.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(all, `Set “${viewSet}”`); go(setBack); })));
     bar.replaceChildren(...(selecting ? [h('div', { class: 'actions' },
       btn(picked.size === shown.length && shown.length ? 'Clear' : 'Select all' + (q ? ' shown' : ''), 'small', () => { if (picked.size === shown.length) picked.clear(); else shown.forEach(c => picked.add(c)); draw(); }),
       btn(`Move (${picked.size})…`, 'small', moveSheet),
@@ -1023,13 +1059,13 @@ function setScreen() {
   }
   const search = h('input', { class: 'search', type: 'search', placeholder: 'Search this set', oninput: e => { q = e.target.value.toLowerCase(); draw(); } });
   draw();
-  return h('div', { class: 'page' }, btn('‹ Library', 'small', () => go('library')), head, search, bar, list);
+  return h('div', { class: 'page' }, btn(setBack === 'sets' ? '‹ Manage sets' : '‹ Library', 'small', () => go(setBack)), head, search, bar, list);
 }
 
 function libraryScreen() {
   let q = '', f = 'all', setF = 'all';
   const list = h('div');
-  const editSetBtn = btn('', 'small primary', () => { viewSet = setF; go('set'); }); editSetBtn.hidden = true;
+  const editSetBtn = btn('', 'small primary', () => { viewSet = setF; setBack = 'library'; go('set'); }); editSetBtn.hidden = true;
   const setChips = h('div', { class: 'chips' });
   const filters = ['all', 'new', 'learning', 'reviewing', 'mastered', 'weak'];
   const chips = h('div', { class: 'chips' });
@@ -1047,7 +1083,7 @@ function libraryScreen() {
   draw();
   const refresh = () => go('library');
   return h('div', { class: 'page' }, h('h1', null, 'Library'),
-    h('div', { class: 'actions' }, btn('＋ Add word', 'primary small', () => openWordEditor({ set: setF === 'all' ? '' : setF, after: refresh })), btn('Manage sets', 'small', () => openSetManager(refresh)), editSetBtn),
+    h('div', { class: 'actions' }, btn('＋ Add word', 'primary small', () => openWordEditor({ set: setF === 'all' ? '' : setF, after: refresh })), btn('Manage sets', 'small', () => go('sets')), editSetBtn),
     search, setChips, chips, list);
 }
 

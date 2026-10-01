@@ -1,5 +1,5 @@
 // Offline support. Network-first: online you always get the newest files; offline you get the saved copy.
-const CACHE = 'wordy-v12';
+const CACHE = 'wordy-v13';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'logic.js', 'vocab.js', 'analysis.js', 'parts.js', 'partsmode.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 const fresh = u => fetch(new Request(u, { cache: 'reload' }));   // bypass the browser's own HTTP cache (GitHub Pages sets 10 min)
 self.addEventListener('install', e => {

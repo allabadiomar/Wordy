@@ -221,3 +221,10 @@ html.locked #app{position:fixed;top:var(--vvtop,0px);left:50%;transform:translat
 .menuitem{display:block;width:100%;text-align:left;border:0;background:none;padding:11px 12px;border-radius:8px;font-weight:600;cursor:pointer}
 .menuitem:active{background:var(--line)}
 .menu.up{top:auto;bottom:calc(100% + 4px)}
+
+.pagehead{position:sticky;top:0;z-index:4;background:var(--bg);display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0 10px;margin-bottom:4px}
+.swrap{position:relative;margin:10px 0;touch-action:pan-y}
+.swrap .sfront{position:relative;z-index:1;margin:0;touch-action:pan-y;user-select:none;-webkit-user-select:none}
+.sdel{position:absolute;right:1px;top:1px;bottom:1px;width:calc(84px + 16px);border:0;border-radius:0 var(--r) var(--r) 0;background:#d64541;display:flex;align-items:center;justify-content:flex-end;padding:0 24px 0 0;cursor:pointer;z-index:0}
+.swrap:not(.open) .sdel{pointer-events:none}
+.swrap:has(.menu:not([hidden])){z-index:10}
