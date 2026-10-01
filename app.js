@@ -27,7 +27,7 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
 const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash', fallbacks: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'] };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
@@ -108,7 +108,7 @@ function go(name) {
 }
 tabsEl.addEventListener('click', e => { const b = e.target.closest('button[data-go]'); if (b) go(b.dataset.go); });
 let toastT;
-function toast(msg) { toastEl.textContent = msg; toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 2600); }
+function toast(msg) { toastEl.style.pointerEvents = ''; toastEl.textContent = msg; toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 2600); }
 const buzz = p => { try { navigator.vibrate && navigator.vibrate(p); } catch {} };
 
 function sheet(content) {
@@ -845,6 +845,7 @@ function openDetail(c, after) {
       h('div', { class: 'actions' },
         btn('Mark mastered', 'small', () => { c.seen = Math.max(c.seen, 1); c.reps = 5; c.interval = 30; c.due = Date.now() + 30 * L.DAY; Store.saveCard(c); toast('Marked mastered'); draw(); after && after(); }),
         btn('Reset progress', 'small', () => { if (confirm('Reset progress for “' + c.term + '”?')) { Object.assign(c, { ease: 2.5, interval: 0, reps: 0, lapses: 0, due: 0, seen: 0, correct: 0, streak: 0, last: 0, hist: [], modes: {} }); Store.saveCard(c); draw(); after && after(); } }),
+        btn('Edit', 'small', () => { close(); openWordEditor({ card: c, after: after ? after : () => go(currentTab) }); }),
         btn('Close', 'small primary', () => close())));
   }
   draw(); close = sheet(box);
@@ -865,6 +866,103 @@ function homeScreen() {
         m.ai ? h('span', { class: 'badge ai' }, 'AI') : null, h('span', { class: 'ico' }, m.ico), h('b', null, m.name), h('small', null, m.desc)))));
 }
 
+/* ---------- Sets editor: create / edit / move / delete words and sets, export ---------- */
+const cleanText = x => String(x || '').trim().replace(/\s+/g, ' ');
+const setNames = () => [...new Set(S.cards.map(c => c.set))].sort((a, b) => a.localeCompare(b));
+async function commitCards(next) { S.cards = next; await Store.replaceAll(S.cards); }
+function undoToast(msg, undo) {
+  const off = () => { toastEl.classList.remove('on'); toastEl.style.pointerEvents = ''; };
+  toastEl.replaceChildren(msg + ' ', h('button', { class: 'btn small', type: 'button', style: { marginLeft: '8px' }, onclick: async () => { off(); await undo(); } }, 'Undo'));
+  toastEl.style.pointerEvents = 'auto'; toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(off, 8000);
+}
+// Create (orig = null) or edit a word. Progress stays with an edited card; stored AI analysis is cleared when its term or definition changes.
+async function saveWord(orig, f) {
+  const term = cleanText(f.term), def = cleanText(f.def), set = cleanText(f.set);
+  if (!term) return { error: 'Enter a term' };
+  if (!def) return { error: 'Enter a definition' };
+  if (!set) return { error: 'Choose or name a set' };
+  const id = L.keyOf(set, term);
+  if (S.cards.some(c => c.id === id && c !== orig)) return { error: `“${term}” is already in the set “${set}”` };
+  if (!orig) { await commitCards([...S.cards, L.newCard({ set, term, def })]); return { ok: true }; }
+  const aiStale = orig.term !== term || orig.def !== def;
+  Object.assign(orig, { id, set, term, def }); if (aiStale) orig.ai = null;
+  await commitCards([...S.cards]); return { ok: true };
+}
+async function deleteCards(cards, label) {
+  const gone = new Set(cards); const removed = [...cards];
+  await commitCards(S.cards.filter(c => !gone.has(c)));
+  undoToast(label + ' deleted.', async () => { await commitCards([...S.cards, ...removed]); toast('Restored'); go(currentTab); });
+}
+async function renameSet(oldName, raw) {
+  const name = cleanText(raw); if (!name) return { error: 'Enter a name' };
+  if (name === oldName) return { ok: true };
+  if (setNames().some(n => n !== oldName && n.toLowerCase() === name.toLowerCase())) return { error: `A set called “${name}” already exists. Move words into it instead.` };
+  S.cards.forEach(c => { if (c.set === oldName) { c.set = name; c.id = L.keyOf(name, c.term); } });
+  const last = S.settings.last || {}; Object.values(last).forEach(cfg => { if (cfg && Array.isArray(cfg.sets)) cfg.sets = cfg.sets.map(x => x === oldName ? name : x); }); saveSettings();
+  await commitCards([...S.cards]); return { ok: true };
+}
+function setText(name, fmt) {
+  const cards = S.cards.filter(c => !name || c.set === name);
+  if (fmt === 'tsv') return [...cards].sort((a, b) => a.term.localeCompare(b.term)).map(c => c.term + '\t' + c.def).join('\n') + '\n';
+  const names = name ? [name] : setNames();
+  return names.map(n => '# Vocabulary Set: ' + n + '\n\n' + cards.filter(c => c.set === n).map((c, i) => `${i + 1}. ${c.term}${/[–—-]\s|\|/.test(c.term) ? '\t' : ' - '}${c.def}`).join('\n')).join('\n\n') + '\n';
+}
+function exportSet(name, fmt) {
+  const slug = (name || 'all-sets').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'set';
+  download(`wordy-${slug}.${fmt}`, setText(name, fmt), 'text/plain'); toast('Exported ' + (name || 'all sets'));
+}
+function openWordEditor({ card = null, set = '', after } = {}) {
+  const NEW = '__new__', names = setNames();
+  const start = card ? card.set : (set && names.includes(set) ? set : (names.length ? names[names.length - 1] : NEW));
+  const term = h('input', { value: card ? card.term : '', placeholder: 'Term', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false' });
+  const def = h('textarea', { placeholder: 'Definition', rows: 3 }); def.value = card ? card.def : '';
+  const newName = h('input', { placeholder: 'New set name', autocomplete: 'off', value: set && !names.includes(set) ? set : '' });
+  const newWrap = h('label', { class: 'field' }, h('span', null, 'New set name'), newName);
+  const sel = h('select', { onchange: () => { newWrap.hidden = sel.value !== NEW; } }, ...names.map(n => h('option', { value: n }, n)), h('option', { value: NEW }, '＋ New set…'));
+  sel.value = names.includes(start) ? start : NEW; newWrap.hidden = sel.value !== NEW;
+  const err = h('p', { class: 'note', style: { color: '#c0392b' } });
+  let close;
+  const save = async again => {
+    const target = sel.value === NEW ? newName.value : sel.value;
+    const r = await saveWord(card, { term: term.value, def: def.value, set: target });
+    if (r.error) { err.textContent = r.error; return; }
+    close(); after && after();
+    if (again) { toast('Added'); openWordEditor({ set: cleanText(target), after }); } else toast(card ? 'Saved' : 'Added');
+  };
+  const body = h('div', null, h('h2', null, card ? 'Edit word' : 'Add word'),
+    h('label', { class: 'field' }, h('span', null, 'Term'), term),
+    h('label', { class: 'field' }, h('span', null, 'Definition'), def),
+    h('label', { class: 'field' }, h('span', null, 'Set'), sel), newWrap,
+    card ? h('p', { class: 'note' }, 'Your progress on this word is kept. Changing the term or definition clears its AI breakdown (it is re-analysed later).') : null,
+    err,
+    h('div', { class: 'actions' }, btn('Save', 'primary', () => save(false)), card ? null : btn('Save & add another', '', () => save(true)),
+      card ? btn('Delete', 'bad small', async () => { if (!confirm('Delete “' + card.term + '”, with its progress?')) return; close(); await deleteCards([card], '“' + card.term + '”'); after && after(); }) : null,
+      btn('Cancel', 'small', () => close())));
+  close = sheet(body); if (!card) term.focus();
+}
+function openSetManager(after) {
+  const box = h('div'); let close;
+  function draw() {
+    const names = setNames();
+    box.replaceChildren(h('h2', null, 'Manage sets'),
+      h('div', { class: 'actions' }, btn('＋ New set', 'primary small', () => { close(); openWordEditor({ set: '', after }); }), btn('Export all (.txt)', 'small', () => exportSet(null, 'txt'))),
+      names.length ? null : h('p', { class: 'muted' }, 'No sets yet.'),
+      ...names.map(n => {
+        const cards = S.cards.filter(c => c.set === n); const row = h('div', { class: 'card' });
+        const show = () => row.replaceChildren(h('div', { class: 'row between' }, h('b', null, n), h('small', { class: 'muted' }, cards.length + (cards.length === 1 ? ' word' : ' words'))),
+          h('div', { class: 'actions' },
+            btn('Rename', 'small', edit), btn('Export .txt', 'small', () => exportSet(n, 'txt')), btn('Export .tsv', 'small', () => exportSet(n, 'tsv')),
+            btn('Delete', 'bad small', async () => { if (!confirm(`Delete the set “${n}” and its ${cards.length} word${cards.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(cards, `Set “${n}”`); draw(); after && after(); })));
+        const edit = () => { const inp = h('input', { value: n, autocomplete: 'off' }); const e = h('p', { class: 'note' });
+          row.replaceChildren(h('label', { class: 'field' }, h('span', null, 'Set name'), inp), e,
+            h('div', { class: 'actions' }, btn('Save', 'primary small', async () => { const r = await renameSet(n, inp.value); if (r.error) { e.textContent = r.error; return; } toast('Renamed'); draw(); after && after(); }), btn('Cancel', 'small', show))); inp.focus(); inp.select(); };
+        show(); return row;
+      }),
+      h('div', { class: 'actions' }, btn('Done', 'small primary', () => { close(); after && after(); })));
+  }
+  draw(); close = sheet(box);
+}
+
 function libraryScreen() {
   let q = '', f = 'all', setF = 'all';
   const list = h('div');
@@ -872,8 +970,8 @@ function libraryScreen() {
   const filters = ['all', 'new', 'learning', 'reviewing', 'mastered', 'weak'];
   const chips = h('div', { class: 'chips' });
   const search = h('input', { class: 'search', type: 'search', placeholder: 'Search terms or meanings', oninput: e => { q = e.target.value.toLowerCase(); draw(); } });
-  const libSets = [...new Set(S.cards.map(c => c.set))].sort().reverse();
   function draw() {
+    const libSets = [...new Set(S.cards.map(c => c.set))].sort().reverse(); if (setF !== 'all' && !libSets.includes(setF)) setF = 'all';
     setChips.replaceChildren(...['all', ...libSets].map(x => h('button', { class: 'chip' + (setF === x ? ' on' : ''), onclick: () => { setF = x; draw(); } }, x === 'all' ? 'All sets' : x)));
     chips.replaceChildren(...filters.map(x => h('button', { class: 'chip' + (f === x ? ' on' : ''), onclick: () => { f = x; draw(); } }, x[0].toUpperCase() + x.slice(1))));
     const rows = S.cards.filter(c => (setF === 'all' || c.set === setF) && (!q || c.term.toLowerCase().includes(q) || c.def.toLowerCase().includes(q)) && (f === 'all' || (f === 'weak' ? L.isWeak(c) : L.stateOf(c) === f))).sort((a, b) => a.term.localeCompare(b.term));
@@ -882,7 +980,10 @@ function libraryScreen() {
     if (rows.length > 300) list.append(h('p', { class: 'muted center' }, 'Refine your search to see more'));
   }
   draw();
-  return h('div', { class: 'page' }, h('h1', null, 'Library'), search, setChips, chips, list);
+  const refresh = () => go('library');
+  return h('div', { class: 'page' }, h('h1', null, 'Library'),
+    h('div', { class: 'actions' }, btn('＋ Add word', 'primary small', () => openWordEditor({ set: setF === 'all' ? '' : setF, after: refresh })), btn('Manage sets', 'small', () => openSetManager(refresh))),
+    search, setChips, chips, list);
 }
 
 function statsScreen() {
@@ -1000,9 +1101,11 @@ function applyBundledAnalysis() {
   S.settings = { ...DEFAULTS, ...(await Store.getKV('settings', {})) };
   S.meta = await Store.getKV('meta', { log: {} }); if (!S.meta.log) S.meta.log = {};
   S.cards = await Store.loadCards();
-  if (!S.cards.length && typeof SEED_TEXT === 'string') {
+  // Load the starter deck only on a truly fresh install, never again after the user has emptied their library on purpose.
+  if (!S.cards.length && !S.meta.seeded && typeof SEED_TEXT === 'string') {
     const r = L.mergeImport([], L.parseVocab(SEED_TEXT)); S.cards = r.cards; await Store.replaceAll(S.cards); setTimeout(() => toast(`Loaded ${r.added} terms`), 400);
   }
+  if (!S.meta.seeded) { S.meta.seeded = true; Store.setKV('meta', S.meta); }
   applyBundledAnalysis();
   initParts(await Store.getKV('partsProgress', {}));
   go('home');

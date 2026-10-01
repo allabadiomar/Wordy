@@ -30,9 +30,9 @@ function recordPart(p, g, mode) {
 addEventListener('pagehide', () => { if (partTimer) flushParts(); });
 
 /* ---------- helpers ---------- */
-let deckIdx = null, deckLen = -1;
+let deckIdx = null, deckSrc = null;   // rebuilt whenever S.cards is replaced (every edit assigns a new array)
 function deckCard(term) {
-  if (!deckIdx || deckLen !== S.cards.length) { deckIdx = new Map(S.cards.map(c => [c.term.toLowerCase(), c])); deckLen = S.cards.length; }
+  if (!deckIdx || deckSrc !== S.cards) { deckIdx = new Map(S.cards.map(c => [c.term.toLowerCase(), c])); deckSrc = S.cards; }
   return deckIdx.get(String(term).toLowerCase());
 }
 const partWords = p => p.words.map(deckCard).filter(Boolean);
