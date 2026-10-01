@@ -406,9 +406,16 @@ function renderTyped(body, o) {
     const speaker = o.card ? h('button', { class: 'icon speak', type: 'button', 'aria-label': 'Hear ' + o.card.term, onclick: e => { e.stopPropagation(); Pron.speak(o.card); } }, '🔊') : null;
     const ipa = o.card ? h('span', { class: 'ipa' }, o.card.pron && o.card.pron.ipa || '') : null;
     if (o.card && !o.card.pron) Pron.lookup(o.card).then(p => { ipa.textContent = p.ipa || ''; });
-    const verdict = h('div', { class: 'result ' + (r.ok ? 'ok' : 'no') }, h('div', { class: 'vhead' }, title, h('span', { class: 'vspeak' }, ipa, speaker)), h('div', { class: 'ans' }, o.correctText), (!r.ok && v) ? h('div', { class: 'note' }, 'You wrote: ' + v) : null, ...kids(o.extra ? o.extra() : null));
+    const verdict = h('div', { class: 'result ' + (r.ok ? 'ok' : 'no') }, h('div', { class: 'vhead' }, title, h('span', { class: 'vspeak' }, ipa, speaker)), h('div', { class: 'ans' }, o.correctText), (!r.ok && v) ? h('div', { class: 'note' }, 'You wrote: ' + v) : null, ...kids(!o.extraToggle && o.extra ? o.extra() : null));
     verdictSlot.replaceChildren(verdict);
     const extras = []; let overrideBtn = null, aiBtn = null;
+    // optional breakdown (roots, origin): behind a button so the verdict stays short above the keyboard
+    const ex = o.extraToggle && o.extra ? o.extra() : null;
+    if (ex && ex.childNodes && ex.childNodes.length) {
+      const box = h('div', { class: 'vextra' }, ex); box.hidden = true; verdict.append(box);
+      const tgl = btn('Breakdown ▾', 'small', () => { box.hidden = !box.hidden; tgl.textContent = box.hidden ? 'Breakdown ▾' : 'Breakdown ▴'; if (!box.hidden) box.scrollIntoView({ block: 'nearest' }); });
+      extras.push(tgl);
+    }
     const accept = label => { state = { ...state, ok: true, grade: 1 }; verdict.className = 'result ok'; title.textContent = label; overrideBtn && overrideBtn.remove(); aiBtn && aiBtn.remove(); };
     if (!r.ok && v) {
       overrideBtn = btn('I was right', 'good small', () => accept('Counted as correct'));
@@ -489,7 +496,8 @@ function runWrite(queue) {
       },
       judge: t2d ? v => AI.judgeDef(c, v) : null,
       card: c,
-      extra: () => h('div', { class: 'vextra' }, partsView(c.ai), c.ai && c.ai.origin ? h('div', { class: 'note' }, c.ai.origin) : null),
+      extraToggle: true,
+      extra: () => h('div', null, partsView(c.ai), c.ai && c.ai.origin ? h('div', { class: 'note' }, c.ai.origin) : null, c.ai && c.ai.mnemonic ? h('div', { class: 'note' }, '💡 ' + c.ai.mnemonic) : null),
       onDone: (g, ok) => {
         record(c, g, 'write'); q.shift();
         if (!ok) { missed.set(c.id, c); q.splice(Math.min(3, q.length), 0, c); }
@@ -640,29 +648,6 @@ function runMatch(queue) {
   round();
 }
 
-async function runRoots(queue) {
-  if (!(await prepAI(queue, 'Roots & parts'))) return;
-  const items = queue.filter(c => c.ai && c.ai.parts.length);
-  if (!items.length) { toast('No word breakdowns available yet'); return go('home'); }
-  const bank = S.cards.flatMap(c => (c.ai ? c.ai.parts : []));
-  const FALL = ['not', 'before', 'under', 'across', 'again', 'to carry', 'to write', 'above', 'one who', 'full of', 'to see', 'against'];
-  const sh = shell('Roots & parts', items.length); let i = 0, correct = 0; const missed = [];
-  function next() {
-    sh.progress(i, items.length);
-    if (i >= items.length) return summary({ correct, total: items.length, missed, again: () => start('roots') });
-    const c = items[i], p = c.ai.parts[Math.floor(Math.random() * c.ai.parts.length)];
-    const seen = new Set([p.meaning.toLowerCase()]); const pool2 = L.shuffle(bank.filter(x => x.type === p.type)).concat(L.shuffle(bank), L.shuffle(FALL.map(m => ({ meaning: m }))));
-    const wrong = []; for (const x of pool2) { const m = x.meaning.toLowerCase(); if (!seen.has(m)) { seen.add(m); wrong.push(x.meaning); if (wrong.length === 3) break; } }
-    renderMC(sh.body, {
-      label: `In “${c.term}”`, prompt: h('div', { class: 'def' }, 'What does the ', h('b', null, p.type), ' ', h('b', null, p.part), ' mean?'),
-      options: [p.meaning, ...wrong], answer: p.meaning,
-      reveal: ok => h('div', { class: 'card center' }, h('b', null, c.term), partsView(c.ai), c.ai.origin ? h('div', { class: 'note' }, c.ai.origin) : null, c.ai.mnemonic ? h('div', { class: 'note' }, '💡 ' + c.ai.mnemonic) : null, h('div', { class: 'note' }, c.def)),
-      onDone: ok => { note(c, ok, 'roots'); if (ok) correct++; else missed.push(c); i++; next(); }
-    });
-  }
-  next();
-}
-
 async function runContext(queue) {
   if (!(await prepAI(queue, 'Context'))) return;
   const sentencesOf = c => ((c.ai && (c.ai.sentences && c.ai.sentences.length ? c.ai.sentences : [c.ai.sentence])) || []).filter(x => x && L.blankOut(x, c.term) !== x);
@@ -713,35 +698,52 @@ const MODES = {
   write: { name: 'Write', ico: '✍️', desc: 'Type the term or meaning', run: runWrite },
   test: { name: 'Test', ico: '📝', desc: 'Mixed quiz with a score', run: runTest },
   match: { name: 'Match', ico: '⚡', desc: 'Race to pair them up', run: runMatch },
-  roots: { name: 'Roots & parts', ico: '🌿', desc: 'Prefixes, roots, suffixes', run: runRoots, ai: true },
+  roots: { name: 'Roots & parts', ico: '🌿', desc: 'Learn and practise word parts', hub: () => openRootsHub() },
   context: { name: 'In context', ico: '💬', desc: 'Fill the blank in a sentence', run: runContext, ai: true },
-  useit: { name: 'Use it', ico: '🎯', desc: 'Write a sentence, get feedback', run: runUseIt, ai: true }
+  useit: { name: 'Use it', ico: '🎯', desc: 'Write a sentence, get feedback', run: runUseIt, ai: true },
+  // sub-modes of Roots & parts (reached from its hub, not shown on the home screen)
+  pLearn: { name: 'Learn parts', ico: '🌱', desc: 'Meet a few parts at a time, then practise them', run: runPartLearn, parts: true, hidden: true },
+  pFlash: { name: 'Part flashcards', ico: '🃏', desc: 'Flip and self-grade', run: runPartFlash, parts: true, hidden: true },
+  pQuiz: { name: 'Parts in your words', ico: '🎯', desc: 'What does the part in this word mean?', run: runPartQuiz, parts: true, hidden: true }
 };
 // Build a fresh queue from a saved config and launch the mode. Returns false if nothing matches.
 function startWith(key, cfg) {
-  const sets = new Set(cfg.sets), P = S.cards.filter(c => sets.has(c.set));
-  const q = sessionQueue(P, cfg.which, cfg.count === 'all' ? P.length : cfg.count);
-  if (!q.length) { toast('No words match those choices.'); return false; }
+  const m = MODES[key];
+  let q;
+  if (m.parts) {
+    const types = new Set(cfg.sets), P = S.parts.filter(p => types.has(p.type) && (!cfg.level || cfg.level === 'all' || p.level <= +cfg.level));
+    q = partQueue(P, cfg.which, cfg.count === 'all' ? P.length : cfg.count);
+  } else {
+    const sets = new Set(cfg.sets), P = S.cards.filter(c => sets.has(c.set));
+    q = sessionQueue(P, cfg.which, cfg.count === 'all' ? P.length : cfg.count);
+  }
+  if (!q.length) { toast(m.parts ? 'No parts match those choices.' : 'No words match those choices.'); return false; }
   SESSION.dir = cfg.dir || 'mixed';
   window.__wordy && (window.__wordy.lastQueue = q);
-  Pron.prefetch(q); MODES[key].run(q, cfg); return true;
+  if (!m.parts) Pron.prefetch(q);
+  m.run(q, cfg); return true;
 }
 // "Study again" etc.: repeat with the same choices, or ask if there are none yet.
 function start(key) { const cfg = (S.settings.last || {})[key]; if (cfg && startWith(key, cfg)) return; openSetup(key); }
 
 // Pre-session screen: choose sets, which words, how many, and direction.
 function openSetup(key) {
-  const m = MODES[key], allSets = [...new Set(S.cards.map(c => c.set))].sort().reverse();
+  const m = MODES[key], isP = !!m.parts;
+  const GROUPS = [['prefix', 'Prefixes'], ['root', 'Roots'], ['suffix', 'Suffixes']];
+  const allSets = isP ? GROUPS.map(g => g[0]) : [...new Set(S.cards.map(c => c.set))].sort().reverse();
+  const items = () => isP ? S.parts : S.cards, gOf = c => isP ? c.type : c.set, gLabel = x => isP ? GROUPS.find(g => g[0] === x)[1] : x;
+  const noun = isP ? 'part' : 'word';
   const saved = (S.settings.last || {})[key] || {};
   const chosen = new Set((saved.sets || []).filter(x => allSets.includes(x)));
   if (!chosen.size) allSets.forEach(x => chosen.add(x));
-  const st = { which: saved.which || 'all', count: saved.count || (m.ai ? 20 : 'all'), dir: saved.dir || 'mixed', typed: saved.typed !== false };
-  const dirApplies = key === 'flash' || key === 'write';
+  const st = { which: saved.which || (isP ? (key === 'pLearn' ? 'new' : key === 'pQuiz' ? 'learned' : 'smart') : 'all'), count: saved.count || (isP ? 10 : m.ai ? 20 : 'all'), dir: saved.dir || 'mixed', typed: saved.typed !== false, level: saved.level || 'all' };
+  const levelOk = c => !isP || st.level === 'all' || c.level <= +st.level;
+  const dirApplies = key === 'flash' || key === 'write' || key === 'pFlash';
   const body = h('div'); let startBtn = null, avail = 0;
   const effective = () => st.count === 'all' ? avail : Math.min(st.count, avail);
-  const startLabel = () => `Start · ${effective()} ${effective() === 1 ? 'word' : 'words'}`;
+  const startLabel = () => `Start · ${effective()} ${effective() === 1 ? noun : noun + 's'}`;
   function begin() {
-    const cfg = { sets: [...chosen], which: st.which, count: st.count, dir: st.dir, typed: st.typed };
+    const cfg = { sets: [...chosen], which: st.which, count: st.count, dir: st.dir, typed: st.typed, level: st.level };
     S.settings.last = { ...(S.settings.last || {}), [key]: cfg }; saveSettings(); startWith(key, cfg);
   }
   function pickSet(x) {
@@ -749,43 +751,44 @@ function openSetup(key) {
     else if (chosen.has(x)) chosen.delete(x); else chosen.add(x);
     draw();
   }
-  const WHICH = { all: 'Everything', smart: 'Smart mix', due: 'Due for review', weak: 'Weak words', new: 'Not studied yet' };
+  const WHICH = { all: 'Everything', smart: 'Smart mix', due: 'Due for review', weak: 'Weak ' + noun + 's', new: 'Not studied yet', learned: "Parts I've started" };
   let setsText = '', sumEl = null;
-  const summaryText = () => `${setsText}  →  ${WHICH[st.which]}  →  ${effective()} of ${avail} ${avail === 1 ? 'word' : 'words'}`;
+  const summaryText = () => `${setsText}  →  ${WHICH[st.which]}  →  ${effective()} of ${avail} ${avail === 1 ? noun : noun + 's'}`;
   function draw() {
     const allOn = chosen.size === allSets.length;
-    setsText = allOn ? 'all sets' : chosen.size ? [...chosen].sort().reverse().join(' + ') : 'no sets';
-    const now = Date.now(), P = S.cards.filter(c => chosen.has(c.set));
-    const n = { all: P.length, smart: P.length, due: P.filter(c => L.isDue(c, now)).length, weak: P.filter(L.isWeak).length, new: P.filter(c => c.seen === 0).length };
+    setsText = allOn ? (isP ? 'all types' : 'all sets') : chosen.size ? [...chosen].sort().reverse().map(gLabel).join(' + ') : (isP ? 'no types' : 'no sets');
+    const now = Date.now(), P = items().filter(c => chosen.has(gOf(c)) && levelOk(c));
+    const n = { all: P.length, smart: P.length, due: P.filter(c => L.isDue(c, now)).length, weak: P.filter(L.isWeak).length, new: P.filter(c => c.seen === 0).length, learned: P.filter(c => c.seen > 0).length };
     avail = n[st.which];
     const presets = [10, 25, 50, 100].filter(v => v < avail);
     const covers = st.count === 'all' || st.count >= avail;
     const custom = typeof st.count === 'number' && st.count < avail && !presets.includes(st.count);
     startBtn = btn(startLabel(), 'primary block', begin, { disabled: effective() === 0 });
     body.replaceChildren(...kids(
-      h('h2', null, '1. Sets'),
+      h('h2', null, isP ? '1. Types' : '1. Sets'),
       h('div', { class: 'chips wrap' }, [
-        h('button', { class: 'chip' + (allOn ? ' on' : ''), type: 'button', onclick: () => { allSets.forEach(x => chosen.add(x)); draw(); } }, `All sets · ${S.cards.length}`),
-        ...allSets.map(x => h('button', { class: 'chip' + (chosen.has(x) && !allOn ? ' on' : ''), type: 'button', onclick: () => pickSet(x) }, `${x} · ${S.cards.filter(c => c.set === x).length}`))]),
-      h('p', { class: 'note' }, 'Tap a set to study just that one. Tap more to combine them.'),
-      h('h2', null, '2. Which words'),
+        h('button', { class: 'chip' + (allOn ? ' on' : ''), type: 'button', onclick: () => { allSets.forEach(x => chosen.add(x)); draw(); } }, (isP ? 'All types' : 'All sets') + ` · ${items().filter(levelOk).length}`),
+        ...allSets.map(x => h('button', { class: 'chip' + (chosen.has(x) && !allOn ? ' on' : ''), type: 'button', onclick: () => pickSet(x) }, `${gLabel(x)} · ${items().filter(c => gOf(c) === x && levelOk(c)).length}`))]),
+      h('p', { class: 'note' }, isP ? 'Tap a type to study just that one. Tap more to combine them.' : 'Tap a set to study just that one. Tap more to combine them.'),
+      isP ? [h('p', { class: 'note' }, 'Level'), h('div', { class: 'chips wrap' }, [['all', 'All'], ['2', 'Essential + useful'], ['1', 'Essential only']].map(([v, l]) => h('button', { class: 'chip' + (st.level === v ? ' on' : ''), type: 'button', onclick: () => { st.level = v; draw(); } }, l)))] : null,
+      h('h2', null, isP ? '2. Which parts' : '2. Which words'),
       h('p', { class: 'note' }, `Counts below are only for: ${setsText}.`),
-      h('div', { class: 'opts tight' }, [['all', 'Everything, shuffled'], ['smart', 'Smart mix (due & weak first)'], ['due', 'Due for review'], ['weak', 'Weak words'], ['new', 'Not studied yet']].map(([v, l]) =>
+      h('div', { class: 'opts tight' }, [['all', 'Everything, shuffled'], ['smart', 'Smart mix (due & weak first)'], ['due', 'Due for review'], ['weak', 'Weak ' + noun + 's'], ['new', 'Not studied yet'], ...(isP ? [['learned', "Parts I've started"]] : [])].map(([v, l]) =>
         h('button', { class: 'opt' + (st.which === v ? ' sel' : ''), type: 'button', onclick: () => { st.which = v; draw(); } }, l, h('small', { class: 'muted' }, '  ·  ' + n[v])))),
       h('h2', null, `3. How many (of ${avail})`),
       h('div', { class: 'chips wrap' }, [['all', `All (${avail})`], ...presets.map(v => [v, String(v)])].map(([v, l]) => h('button', { class: 'chip' + ((v === 'all' ? covers : st.count === v) ? ' on' : ''), type: 'button', onclick: () => { st.count = v; draw(); } }, l))),
       h('input', { class: 'search', type: 'number', inputMode: 'numeric', min: 1, placeholder: 'Or type a number', value: custom ? st.count : '',
         oninput: e => { const v = parseInt(e.target.value, 10); st.count = v > 0 ? v : 'all'; startBtn.textContent = startLabel(); startBtn.disabled = effective() === 0; sumEl.textContent = summaryText(); },
         onchange: () => draw() }),
-      dirApplies ? [h('h2', null, '4. Direction'), h('div', { class: 'chips wrap' }, [['mixed', 'Mixed'], ['t2d', 'Term → definition'], ['d2t', 'Definition → term']].map(([v, l]) => h('button', { class: 'chip' + (st.dir === v ? ' on' : ''), type: 'button', onclick: () => { st.dir = v; draw(); } }, l)))] : null,
-      key === 'learn' ? [h('h2', null, '4. Question types'), h('div', { class: 'chips wrap' }, [[true, 'Multiple choice + typing'], [false, 'Multiple choice only']].map(([v, l]) => h('button', { class: 'chip' + (st.typed === v ? ' on' : ''), type: 'button', onclick: () => { st.typed = v; draw(); } }, l))), h('p', { class: 'note' }, 'Typing questions are mixed in at random, more often the second time a word comes up.')] : null,
+      dirApplies ? [h('h2', null, '4. Direction'), h('div', { class: 'chips wrap' }, (key === 'pFlash' ? [['mixed', 'Mixed'], ['t2d', 'Part → meaning'], ['d2t', 'Meaning → part']] : [['mixed', 'Mixed'], ['t2d', 'Term → definition'], ['d2t', 'Definition → term']]).map(([v, l]) => h('button', { class: 'chip' + (st.dir === v ? ' on' : ''), type: 'button', onclick: () => { st.dir = v; draw(); } }, l)))] : null,
+      key === 'learn' || key === 'pLearn' ? [h('h2', null, '4. Question types'), h('div', { class: 'chips wrap' }, [[true, 'Multiple choice + typing'], [false, 'Multiple choice only']].map(([v, l]) => h('button', { class: 'chip' + (st.typed === v ? ' on' : ''), type: 'button', onclick: () => { st.typed = v; draw(); } }, l))), h('p', { class: 'note' }, 'Typing questions are mixed in at random, more often the second time a word comes up.')] : null,
       m.ai ? h('p', { class: 'note' }, 'AI modes prepare each word with Gemini first, so smaller sessions start faster.') : null,
-      avail === 0 ? h('p', { class: 'note' }, chosen.size ? 'No words match. Try another option above.' : 'Pick at least one set.') : null,
+      avail === 0 ? h('p', { class: 'note' }, chosen.size ? 'Nothing matches. Try another option above.' : 'Pick at least one ' + (isP ? 'type' : 'set') + '.') : null,
       (sumEl = h('div', { class: 'card note center', style: { marginTop: '16px' } }, summaryText())),
       startBtn));
   }
   draw(); tabsEl.hidden = true;
-  mount(h('div', { class: 'page' }, h('div', { class: 'row', style: { marginBottom: '6px' } }, h('button', { class: 'icon', 'aria-label': 'Back', onclick: () => go('home') }, '←'), h('h1', { style: { margin: 0 } }, m.ico + ' ' + m.name)), h('p', { class: 'muted' }, m.desc), body));
+  mount(h('div', { class: 'page' }, h('div', { class: 'row', style: { marginBottom: '6px' } }, h('button', { class: 'icon', 'aria-label': 'Back', onclick: () => isP ? openRootsHub() : go('home') }, '←'), h('h1', { style: { margin: 0 } }, m.ico + ' ' + m.name)), h('p', { class: 'muted' }, m.desc), body));
 }
 
 /* ---------- detail sheet ---------- */
@@ -818,7 +821,7 @@ function homeScreen() {
       [['Due', cnt.due], ['New', cnt.fresh], ['Weak', cnt.weak], ['Mastered', cnt.mastered]].map(([l, n]) => h('div', { class: 'tile-stat' }, h('b', null, n), h('small', null, l)))),
     h('h2', null, 'Study'),
     h('div', { class: 'modes' },
-      Object.entries(MODES).map(([k, m], i) => h('button', { class: 'mode' + (i === 0 ? ' hero' : ''), onclick: () => openSetup(k) },
+      Object.entries(MODES).filter(([, m]) => !m.hidden).map(([k, m], i) => h('button', { class: 'mode' + (i === 0 ? ' hero' : ''), onclick: () => m.hub ? m.hub() : openSetup(k) },
         m.ai ? h('span', { class: 'badge ai' }, 'AI') : null, h('span', { class: 'ico' }, m.ico), h('b', null, m.name), h('small', null, m.desc)))));
 }
 
@@ -887,7 +890,7 @@ function settingsScreen() {
   const file = h('input', { type: 'file', accept: '.txt,.md,.csv,.tsv,text/plain', hidden: true, onchange: async e => { const f = e.target.files[0]; if (f) importText(await f.text()); } });
   const bfile = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: async e => {
     const f = e.target.files[0]; if (!f) return;
-    try { const d = JSON.parse(await f.text()); if (!Array.isArray(d.cards)) throw 0; if (!confirm('Replace current progress with this backup?')) return; S.cards = d.cards; S.meta = d.meta || { log: {} }; await Store.replaceAll(S.cards); Store.setKV('meta', S.meta); toast('Backup restored'); go('home'); }
+    try { const d = JSON.parse(await f.text()); if (!Array.isArray(d.cards)) throw 0; if (!confirm('Replace current progress with this backup?')) return; S.cards = d.cards; S.meta = d.meta || { log: {} }; await Store.replaceAll(S.cards); Store.setKV('meta', S.meta); initParts(d.parts || {}); flushParts(); applyBundledAnalysis(); toast('Backup restored'); go('home'); }
     catch { toast('That file is not a Wordy backup'); }
   } });
   return h('div', { class: 'page' }, h('h1', null, 'Settings'),
@@ -908,8 +911,8 @@ function settingsScreen() {
       h('p', { class: 'note' }, `Recordings saved on this device: ${S.cards.filter(c => c.pron && c.pron.audio).length} of ${S.cards.length} words. Words without a recording use your phone's built-in voice. Wordy fetches the rest slowly in the background while you're online.`)),
     h('div', { class: 'card' }, h('h3', null, 'Backup'),
       h('p', { class: 'note' }, Store.persistent ? 'Progress is saved on this device. Export a backup now and then, especially before clearing browser data.' : 'Warning: this browser blocked IndexedDB, so progress is saved in a fallback that may be cleared.'),
-      h('div', { class: 'actions' }, btn('Export backup', '', () => download('wordy-backup-' + L.dayKey() + '.json', JSON.stringify({ v: 1, cards: S.cards, meta: S.meta }))), btn('Restore backup', '', () => bfile.click())), bfile,
-      btn('Reset all progress', 'bad block', async () => { if (!confirm('Erase all progress? Terms are kept.')) return; S.cards = S.cards.map(c => L.newCard(c)); S.meta = { log: {} }; await Store.replaceAll(S.cards); Store.setKV('meta', S.meta); toast('Progress reset'); go('home'); }, { style: { marginTop: '10px' } })),
+      h('div', { class: 'actions' }, btn('Export backup', '', () => download('wordy-backup-' + L.dayKey() + '.json', JSON.stringify({ v: 2, cards: S.cards, meta: S.meta, parts: S.partsProg }))), btn('Restore backup', '', () => bfile.click())), bfile,
+      btn('Reset all progress', 'bad block', async () => { if (!confirm('Erase all progress? Terms are kept.')) return; S.cards = S.cards.map(c => L.newCard(c)); S.meta = { log: {} }; await Store.replaceAll(S.cards); Store.setKV('meta', S.meta); initParts({}); flushParts(); applyBundledAnalysis(); toast('Progress reset'); go('home'); }, { style: { marginTop: '10px' } })),
     h('div', { class: 'card' }, h('h3', null, 'Install on your phone'),
       h('p', { class: 'note' }, 'iPhone: open in Safari → Share → Add to Home Screen. Android: Chrome menu → Install app. It then runs full-screen and works offline.')));
 }
@@ -938,6 +941,7 @@ function applyBundledAnalysis() {
     const r = L.mergeImport([], L.parseVocab(SEED_TEXT)); S.cards = r.cards; await Store.replaceAll(S.cards); setTimeout(() => toast(`Loaded ${r.added} terms`), 400);
   }
   applyBundledAnalysis();
+  initParts(await Store.getKV('partsProgress', {}));
   go('home');
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   setTimeout(() => Pron.crawl(), 3000);

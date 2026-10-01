@@ -194,3 +194,17 @@ html.locked #app{position:fixed;top:var(--vvtop,0px);left:50%;transform:translat
 .session .qcard.compact .def{font-size:.96rem;line-height:1.25}
 .session .qcard.compact{min-height:0;gap:2px}
 .session .actions{margin-top:8px}
+/* Roots & parts */
+.ptag{display:inline-block;font-size:.68rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:99px;background:var(--accent-soft);color:var(--accent)}
+.pdetail{display:flex;flex-direction:column;gap:6px;text-align:left}
+.prow{display:flex;align-items:center;gap:10px}
+.pbig{font-size:1.7rem;font-weight:800;letter-spacing:-.02em}
+.pmean{font-size:1.1rem;font-weight:700}
+.pexs{display:flex;flex-direction:column;gap:3px;margin-top:4px}
+.pex{font-size:.92rem;line-height:1.3}
+.qcard .big+.ptag{margin-top:6px}
+.mode.wide{min-height:auto;flex-direction:column;width:100%}
+.stack{display:flex;flex-direction:column;gap:10px}
+.pmean .muted{font-weight:500;font-size:.9rem}
+.session .qcard.compact .big{font-size:1.5rem;line-height:1.15}
+.session .qcard.compact .big+.ptag{margin-top:2px}
