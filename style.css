@@ -228,3 +228,8 @@ html.locked #app{position:fixed;top:var(--vvtop,0px);left:50%;transform:translat
 .sdel{position:absolute;right:1px;top:1px;bottom:1px;width:calc(84px + 16px);border:0;border-radius:0 var(--r) var(--r) 0;background:#d64541;display:flex;align-items:center;justify-content:flex-end;padding:0 24px 0 0;cursor:pointer;z-index:0}
 .swrap:not(.open) .sdel{pointer-events:none}
 .swrap:has(.menu:not([hidden])){z-index:10}
+.usage{margin-top:10px;text-align:center}
+.usage .ulab{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}
+.usage .parts{margin-top:4px}
+.usage .part{background:var(--good-bg);color:var(--good)}
+.usage .part i{color:inherit;opacity:.75;margin-left:0}

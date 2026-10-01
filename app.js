@@ -27,7 +27,7 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash', fallbacks: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'] };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
@@ -155,6 +155,16 @@ function note(c, ok, mode) { const m = c.modes[mode] || (c.modes[mode] = { n: 0,
 const partsView = ai => ai && ai.parts && ai.parts.length
   ? h('div', { class: 'parts' }, ai.parts.map(p => h('span', { class: 'part' }, p.part, h('i', null, p.meaning))))
   : null;
+// Prepositions and collocations. Bundled entries (usage.js) are looked up by lowercase term, so a word keeps them if it is moved to another set;
+// words added later get theirs from the AI analysis (card.ai.usage). compact = patterns only (Write breakdown, flashcard back).
+const USAGE = new Map();
+if (typeof WORD_USAGE === 'object') for (const [id, u] of Object.entries(WORD_USAGE)) USAGE.set(id.slice(id.indexOf('||') + 2), u);
+const usageOf = c => USAGE.get(c.term.toLowerCase()) || (c.ai && c.ai.usage && c.ai.usage.use && c.ai.usage.use.length ? c.ai.usage : null);
+const patView = p => h('span', { class: 'part' }, String(p).split(/(\([^)]*\))/).filter(Boolean).map(x => x[0] === '(' ? h('i', null, x) : x));
+function usageView(c, compact) {
+  const u = usageOf(c); if (!u) return null;
+  return h('div', { class: 'usage' }, h('div', { class: 'ulab' }, 'Usage'), h('div', { class: 'parts' }, u.use.map(patView)), !compact && u.ex ? h('div', { class: 'note center' }, '“' + u.ex + '”') : null);
+}
 
 
 /* ---------- Pronunciation (free dictionary API audio, device voice as fallback) ---------- */
@@ -302,8 +312,9 @@ const AI = {
  "parts": [{"part": "...", "type": "prefix" | "root" | "suffix", "meaning": "1-4 words"}],
  "origin": "one short line of etymology, e.g. From Latin ...",
  "mnemonic": "a short vivid memory hook, max 20 words",
- "sentence": "one natural sentence, 12-22 words, that contains the term exactly as written and lets a reader infer its meaning from context"}
-Rules: parts appear in order of the word and use the real morphemes (e.g. "con-", "dict", "-ive"); show hyphens on prefixes and suffixes; if the word has no meaningful affix, give one root part. Never invent etymology you are unsure of; prefer a simpler true breakdown.
+ "sentence": "one natural sentence, 12-22 words, that contains the term exactly as written and lets a reader infer its meaning from context",
+ "usage": {"use": ["0-3 short patterns showing the preposition or collocation the word takes, e.g. 'abide by (a rule)', 'averse to (risk)', 'a modicum of (respect)'"], "ex": "one short sentence (6-16 words) that contains the first pattern in base form"} | null}
+Rules: parts appear in order of the word and use the real morphemes (e.g. "con-", "dict", "-ive"); show hyphens on prefixes and suffixes; if the word has no meaningful affix, give one root part. Never invent etymology you are unsure of; prefer a simpler true breakdown. Usage: include only patterns the word genuinely takes (a required preposition, a verb + noun collocation, or a fixed phrase); if it has none, return "usage": null. Never invent a pattern.
 
 Words:
 ${list}`, { temperature: 0.4 });
@@ -315,6 +326,8 @@ ${list}`, { temperature: 0.4 });
       const parts = (Array.isArray(r.parts) ? r.parts : []).filter(p => p && typeof p.part === 'string' && typeof p.meaning === 'string')
         .slice(0, 6).map(p => ({ part: p.part.trim(), type: ['prefix', 'root', 'suffix'].includes(p.type) ? p.type : 'root', meaning: p.meaning.trim() }));
       c.ai = { parts, origin: String(r.origin || ''), mnemonic: String(r.mnemonic || ''), sentence: String(r.sentence || ''), pos: String(r.pos || '') };
+      const uu = r.usage && typeof r.usage === 'object' ? (Array.isArray(r.usage.use) ? r.usage.use : []).filter(x => typeof x === 'string' && x.trim()).map(x => x.trim().slice(0, 48)).slice(0, 3) : [];
+      if (uu.length) c.ai.usage = { use: uu, ex: String(r.usage.ex || '').trim() };
       Store.saveCard(c); n++;
     });
     return n;
@@ -490,7 +503,7 @@ function runFlash(queue) {
       if (!flipped) card.replaceChildren(h('div', { class: 'lab' }, frontLab), front, h('div', { class: 'hint' }, 'Tap to reveal'));
       else {
         const back = dir === 't2d' ? h('div', { class: 'def' }, c.def) : termLine(c);
-        card.replaceChildren(...kids(h('div', { class: 'lab' }, frontLab), front, h('hr'), back, partsView(c.ai), c.ai && c.ai.mnemonic ? h('div', { class: 'note' }, '💡 ' + c.ai.mnemonic) : null));
+        card.replaceChildren(...kids(h('div', { class: 'lab' }, frontLab), front, h('hr'), back, partsView(c.ai), usageView(c, true), c.ai && c.ai.mnemonic ? h('div', { class: 'note' }, '💡 ' + c.ai.mnemonic) : null));
       }
     }
     function flip() {
@@ -533,7 +546,7 @@ function runWrite(queue) {
       judge: t2d ? v => AI.judgeDef(c, v) : null,
       card: c,
       extraToggle: true,
-      extra: () => h('div', null, partsView(c.ai), c.ai && c.ai.origin ? h('div', { class: 'note' }, c.ai.origin) : null, c.ai && c.ai.mnemonic ? h('div', { class: 'note' }, '💡 ' + c.ai.mnemonic) : null),
+      extra: () => h('div', null, partsView(c.ai), usageView(c, true), c.ai && c.ai.origin ? h('div', { class: 'note' }, c.ai.origin) : null, c.ai && c.ai.mnemonic ? h('div', { class: 'note' }, '💡 ' + c.ai.mnemonic) : null),
       onDone: (g, ok) => {
         record(c, g, 'write'); q.shift();
         if (!ok) { missed.set(c.id, c); q.splice(Math.min(3, q.length), 0, c); }
@@ -843,6 +856,7 @@ function openDetail(c, after) {
       h('p', null, c.def), h('p', { class: 'muted' }, `Set ${c.set} · seen ${c.seen}× · accuracy ${pct(L.accuracy(c))} · streak ${c.streak}` + (c.seen ? ` · next review ${c.due <= Date.now() ? 'now' : 'in ' + fmtDur(c.due - Date.now())}` : '')),
       c.ai ? h('div', { class: 'card' }, partsView(c.ai), c.ai.origin ? h('div', { class: 'note center' }, c.ai.origin) : null, c.ai.mnemonic ? h('div', { class: 'note center' }, '💡 ' + c.ai.mnemonic) : null, c.ai.sentence ? h('div', { class: 'note center' }, '“' + c.ai.sentence + '”') : null)
         : (AI.ready() ? btn('Break down this word ✨', 'block', async e => { e.target.disabled = true; e.target.textContent = 'Thinking…'; try { await AI.enrich([c]); draw(); } catch (er) { toast(er.message); draw(); } }) : h('p', { class: 'note' }, 'Add a Gemini key in Settings to see roots, origin and a memory hook.')),
+      ...kids(usageView(c)),
       h('div', { class: 'actions' },
         btn('Mark mastered', 'small', () => { c.seen = Math.max(c.seen, 1); c.reps = 5; c.interval = 30; c.due = Date.now() + 30 * L.DAY; Store.saveCard(c); toast('Marked mastered'); draw(); after && after(); }),
         btn('Reset progress', 'small', () => { if (confirm('Reset progress for “' + c.term + '”?')) { Object.assign(c, { ease: 2.5, interval: 0, reps: 0, lapses: 0, due: 0, seen: 0, correct: 0, streak: 0, last: 0, hist: [], modes: {} }); Store.saveCard(c); draw(); after && after(); } }),
