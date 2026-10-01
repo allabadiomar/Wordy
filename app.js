@@ -710,18 +710,23 @@ function runUseIt(queue) {
     sh.progress(i, items.length);
     if (i >= items.length) return summary({ correct, total: items.length, missed, again: () => start('useit') });
     const c = items[i];
-    const input = h('textarea', { class: 'answer', placeholder: `Write a sentence using “${c.term}”`, autocapitalize: 'sentences' });
+    const input = h('textarea', { class: 'answer', placeholder: `Recall what “${c.term}” means, then use it in a sentence`, autocapitalize: 'sentences' });
+    let peeked = false;
+    const defBox = h('div', { class: 'note' });
+    const reveal = () => { peeked = true; defBox.replaceChildren(c.def); showBtn.remove(); };
+    const showBtn = btn('Show definition', 'small', reveal);
     const out = h('div'); const submit = btn('Check with AI ✨', 'primary block', async () => {
       const v = input.value.trim(); if (v.length < 8) { toast('Write a full sentence'); return; }
       submit.disabled = true; submit.textContent = 'Thinking…';
       try {
-        const j = await AI.judgeUse(c, v); const g = j.verdict === 'correct' ? 2 : j.verdict === 'partial' ? 1 : 0;
+        const j = await AI.judgeUse(c, v); let g = j.verdict === 'correct' ? 2 : j.verdict === 'partial' ? 1 : 0; if (peeked) g = Math.min(g, 1);   // needed the definition: counts as hard, not easy
+        const wasPeeked = peeked; if (!peeked) reveal();
         input.disabled = true; submit.remove(); record(c, g, 'useit'); if (g >= 1) correct++; else missed.push(c);
-        out.append(h('div', { class: 'result ' + (g ? 'ok' : 'no') }, h('b', null, j.verdict === 'correct' ? 'Nice' : j.verdict === 'partial' ? 'Almost' : 'Not quite'), h('div', { class: 'ans' }, j.feedback), j.better ? h('div', { class: 'note' }, 'Model: ' + j.better) : null),
+        out.append(h('div', { class: 'result ' + (g ? 'ok' : 'no') }, h('b', null, j.verdict === 'correct' ? (wasPeeked ? 'Nice (with a peek)' : 'Nice') : j.verdict === 'partial' ? 'Almost' : 'Not quite'), h('div', { class: 'ans' }, j.feedback), j.better ? h('div', { class: 'note' }, 'Model: ' + j.better) : null),
           h('div', { class: 'actions' }, btn('Continue', 'primary', () => { i++; next(); })));
       } catch (e) { submit.disabled = false; submit.textContent = 'Check with AI ✨'; toast(e.message); }
     });
-    sh.body.replaceChildren(h('div', { class: 'qcard' }, h('div', { class: 'lab' }, 'Use it in a sentence'), h('div', { class: 'big' }, c.term), h('div', { class: 'note' }, c.def)), input, h('div', { class: 'actions' }, submit, btn('Skip', '', () => { i++; next(); })), out);
+    sh.body.replaceChildren(h('div', { class: 'qcard' }, h('div', { class: 'lab' }, 'Use it in a sentence'), h('div', { class: 'big' }, c.term), defBox, showBtn), input, h('div', { class: 'actions' }, submit, btn('Skip', '', () => { i++; next(); })), out);
     input.focus();
   }
   next();
