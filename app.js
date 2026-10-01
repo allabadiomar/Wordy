@@ -27,7 +27,7 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash', fallbacks: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'] };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
@@ -1046,8 +1046,7 @@ function setScreen() {
       h('div', { class: 'actions' },
         btn('＋ Add word', 'primary small', () => openWordEditor({ set: viewSet, after: draw })),
         btn(selecting ? 'Done selecting' : 'Select', 'small', () => { selecting = !selecting; picked.clear(); draw(); }),
-        btn('Rename', 'small', rename), exportMenu(viewSet),
-        btn('Delete set', 'bad small', async () => { if (!confirm(`Delete the set “${viewSet}” and its ${all.length} word${all.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(all, `Set “${viewSet}”`); go(setBack); })));
+        btn('Rename', 'small', rename), exportMenu(viewSet)));
     bar.replaceChildren(...(selecting ? [h('div', { class: 'actions' },
       btn(picked.size === shown.length && shown.length ? 'Clear' : 'Select all' + (q ? ' shown' : ''), 'small', () => { if (picked.size === shown.length) picked.clear(); else shown.forEach(c => picked.add(c)); draw(); }),
       btn(`Move (${picked.size})…`, 'small', moveSheet),
