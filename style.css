@@ -209,3 +209,15 @@ html.locked #app{position:fixed;top:var(--vvtop,0px);left:50%;transform:translat
 .session .qcard.compact .big{font-size:1.5rem;line-height:1.15}
 .session .qcard.compact .big+.ptag{margin-top:2px}
 #toast .btn{background:#fff;color:#222;border-color:#fff;font-weight:700}
+
+.sheet .shead{position:sticky;top:-18px;z-index:3;background:var(--bg);display:flex;align-items:center;justify-content:space-between;padding:8px 0 10px;margin:-6px 0 4px}
+.xbtn{width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--surface);font-size:1.05rem;line-height:1;cursor:pointer}
+.setfoot{display:flex;align-items:center;gap:8px;margin-top:10px}
+.setfoot .grow{flex:1}
+.iconbtn{width:40px;height:40px;border-radius:12px;border:1px solid var(--line);background:var(--surface);display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer}
+.menuwrap{position:relative;display:inline-block}
+.menu{position:absolute;right:0;top:calc(100% + 4px);min-width:150px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;z-index:5}
+.menu[hidden]{display:none}
+.menuitem{display:block;width:100%;text-align:left;border:0;background:none;padding:11px 12px;border-radius:8px;font-weight:600;cursor:pointer}
+.menuitem:active{background:var(--line)}
+.menu.up{top:auto;bottom:calc(100% + 4px)}

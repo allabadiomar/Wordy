@@ -27,7 +27,7 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash', fallbacks: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'] };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
@@ -940,29 +940,33 @@ function openWordEditor({ card = null, set = '', after } = {}) {
       btn('Cancel', 'small', () => close())));
   close = sheet(body); if (!card) term.focus();
 }
+const TRASH_SVG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#c0392b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/><path d="M10 11v6M14 11v6"/></svg>';
+// "Export ▾" button that opens a small menu with .txt / .tsv. name = null exports every set (.txt only).
+function exportMenu(name, cls = 'small') {
+  const menu = h('div', { class: 'menu' }, ...(name ? ['txt', 'tsv'] : ['txt']).map(f => h('button', { class: 'menuitem', type: 'button', onclick: e => { e.stopPropagation(); menu.hidden = true; exportSet(name, f); } }, name ? 'As .' + f : 'All sets as .txt')));
+  menu.hidden = true;
+  const trigger = btn('Export ▾', cls, e => { e.stopPropagation(); const open = menu.hidden; document.querySelectorAll('.menu').forEach(m => { m.hidden = true; }); menu.hidden = !open; menu.classList.remove('up'); if (open) { const r = menu.getBoundingClientRect(), vh = (window.visualViewport ? visualViewport.height : innerHeight); if (r.bottom > vh - 8) menu.classList.add('up'); } });
+  return h('div', { class: 'menuwrap' }, trigger, menu);
+}
+addEventListener('click', () => document.querySelectorAll('.menu').forEach(m => { m.hidden = true; }));
 function openSetManager(after) {
   const box = h('div'); let close;
   function draw() {
     const names = setNames();
-    box.replaceChildren(...kids(h('h2', null, 'Manage sets'),
-      h('div', { class: 'actions' }, btn('＋ New set', 'primary small', () => { close(); openWordEditor({ set: '', after }); }), btn('Export all (.txt)', 'small', () => exportSet(null, 'txt'))),
+    box.replaceChildren(...kids(
+      h('div', { class: 'shead' }, h('h2', { style: { margin: 0 } }, 'Manage sets'), h('button', { class: 'xbtn', type: 'button', 'aria-label': 'Close', onclick: () => { close(); after && after(); } }, '✕')),
+      h('div', { class: 'actions' }, btn('＋ New set', 'primary small', () => { close(); openWordEditor({ set: '', after }); }), exportMenu(null)),
       names.length ? null : h('p', { class: 'muted' }, 'No sets yet.'),
-      ...names.map(n => {
-        const cards = S.cards.filter(c => c.set === n); const row = h('div', { class: 'card' });
-        const show = () => row.replaceChildren(h('div', { class: 'row between' }, h('b', null, n), h('small', { class: 'muted' }, cards.length + (cards.length === 1 ? ' word' : ' words'))),
-          h('div', { class: 'actions' },
-            btn('Open & edit words', 'primary small', () => { close(); viewSet = n; go('set'); }), btn('Rename', 'small', edit), btn('Export .txt', 'small', () => exportSet(n, 'txt')), btn('Export .tsv', 'small', () => exportSet(n, 'tsv')),
-            btn('Delete', 'bad small', async () => { if (!confirm(`Delete the set “${n}” and its ${cards.length} word${cards.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(cards, `Set “${n}”`); draw(); after && after(); })));
-        const edit = () => { const inp = h('input', { value: n, autocomplete: 'off' }); const e = h('p', { class: 'note' });
-          row.replaceChildren(h('label', { class: 'field' }, h('span', null, 'Set name'), inp), e,
-            h('div', { class: 'actions' }, btn('Save', 'primary small', async () => { const r = await renameSet(n, inp.value); if (r.error) { e.textContent = r.error; return; } toast('Renamed'); draw(); after && after(); }), btn('Cancel', 'small', show))); inp.focus(); inp.select(); };
-        show(); return row;
-      }),
-      h('div', { class: 'actions' }, btn('Done', 'small primary', () => { close(); after && after(); }))));
+      names.map(n => {
+        const cards = S.cards.filter(c => c.set === n);
+        const trash = h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Delete set ' + n, onclick: async () => { if (!confirm(`Delete the set “${n}” and its ${cards.length} word${cards.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(cards, `Set “${n}”`); draw(); after && after(); } });
+        trash.innerHTML = TRASH_SVG;
+        return h('div', { class: 'card' }, h('div', { class: 'row between' }, h('b', null, n), h('small', { class: 'muted' }, cards.length + (cards.length === 1 ? ' word' : ' words'))),
+          h('div', { class: 'setfoot' }, trash, h('span', { class: 'grow' }), btn('Edit', 'primary small', () => { close(); viewSet = n; go('set'); }), exportMenu(n)));
+      })));
   }
   draw(); close = sheet(box);
 }
-
 // Move cards to another set (progress and AI data kept; term/definition unchanged). Words whose term already exists in the target are skipped.
 async function moveCards(cards, raw) {
   const target = cleanText(raw); if (!target) return { error: 'Choose or name a set' };
@@ -1006,7 +1010,7 @@ function setScreen() {
       h('div', { class: 'actions' },
         btn('＋ Add word', 'primary small', () => openWordEditor({ set: viewSet, after: draw })),
         btn(selecting ? 'Done selecting' : 'Select', 'small', () => { selecting = !selecting; picked.clear(); draw(); }),
-        btn('Rename', 'small', rename), btn('Export .txt', 'small', () => exportSet(viewSet, 'txt')), btn('Export .tsv', 'small', () => exportSet(viewSet, 'tsv')),
+        btn('Rename', 'small', rename), exportMenu(viewSet),
         btn('Delete set', 'bad small', async () => { if (!confirm(`Delete the set “${viewSet}” and its ${all.length} word${all.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(all, `Set “${viewSet}”`); go('library'); })));
     bar.replaceChildren(...(selecting ? [h('div', { class: 'actions' },
       btn(picked.size === shown.length && shown.length ? 'Clear' : 'Select all' + (q ? ' shown' : ''), 'small', () => { if (picked.size === shown.length) picked.clear(); else shown.forEach(c => picked.add(c)); draw(); }),
