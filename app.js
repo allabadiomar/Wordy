@@ -27,7 +27,7 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash', fallbacks: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'] };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
@@ -99,7 +99,7 @@ function syncViewport() {
 if (window.visualViewport) { visualViewport.addEventListener('resize', syncViewport); visualViewport.addEventListener('scroll', syncViewport); syncViewport(); }
 // Start of every question: forget the previous question's key shortcuts and scroll back to the top.
 function beginQuestion() { keyHandler = null; appEl.scrollTop = 0; window.scrollTo(0, 0); }
-const screens = { home: homeScreen, library: libraryScreen, stats: statsScreen, settings: settingsScreen };
+const screens = { home: homeScreen, library: libraryScreen, stats: statsScreen, settings: settingsScreen, set: () => setScreen() };
 let currentTab = 'home';
 function go(name) {
   currentTab = name; tabsEl.hidden = false;
@@ -944,34 +944,95 @@ function openSetManager(after) {
   const box = h('div'); let close;
   function draw() {
     const names = setNames();
-    box.replaceChildren(h('h2', null, 'Manage sets'),
+    box.replaceChildren(...kids(h('h2', null, 'Manage sets'),
       h('div', { class: 'actions' }, btn('＋ New set', 'primary small', () => { close(); openWordEditor({ set: '', after }); }), btn('Export all (.txt)', 'small', () => exportSet(null, 'txt'))),
       names.length ? null : h('p', { class: 'muted' }, 'No sets yet.'),
       ...names.map(n => {
         const cards = S.cards.filter(c => c.set === n); const row = h('div', { class: 'card' });
         const show = () => row.replaceChildren(h('div', { class: 'row between' }, h('b', null, n), h('small', { class: 'muted' }, cards.length + (cards.length === 1 ? ' word' : ' words'))),
           h('div', { class: 'actions' },
-            btn('Rename', 'small', edit), btn('Export .txt', 'small', () => exportSet(n, 'txt')), btn('Export .tsv', 'small', () => exportSet(n, 'tsv')),
+            btn('Open & edit words', 'primary small', () => { close(); viewSet = n; go('set'); }), btn('Rename', 'small', edit), btn('Export .txt', 'small', () => exportSet(n, 'txt')), btn('Export .tsv', 'small', () => exportSet(n, 'tsv')),
             btn('Delete', 'bad small', async () => { if (!confirm(`Delete the set “${n}” and its ${cards.length} word${cards.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(cards, `Set “${n}”`); draw(); after && after(); })));
         const edit = () => { const inp = h('input', { value: n, autocomplete: 'off' }); const e = h('p', { class: 'note' });
           row.replaceChildren(h('label', { class: 'field' }, h('span', null, 'Set name'), inp), e,
             h('div', { class: 'actions' }, btn('Save', 'primary small', async () => { const r = await renameSet(n, inp.value); if (r.error) { e.textContent = r.error; return; } toast('Renamed'); draw(); after && after(); }), btn('Cancel', 'small', show))); inp.focus(); inp.select(); };
         show(); return row;
       }),
-      h('div', { class: 'actions' }, btn('Done', 'small primary', () => { close(); after && after(); })));
+      h('div', { class: 'actions' }, btn('Done', 'small primary', () => { close(); after && after(); }))));
   }
   draw(); close = sheet(box);
+}
+
+// Move cards to another set (progress and AI data kept; term/definition unchanged). Words whose term already exists in the target are skipped.
+async function moveCards(cards, raw) {
+  const target = cleanText(raw); if (!target) return { error: 'Choose or name a set' };
+  const taken = new Set(S.cards.filter(c => c.set === target).map(c => c.id));
+  let moved = 0, skipped = [];
+  for (const c of cards) {
+    const id = L.keyOf(target, c.term);
+    if (c.set === target) continue;
+    if (taken.has(id)) { skipped.push(c.term); continue; }
+    c.set = target; c.id = id; taken.add(id); moved++;
+  }
+  await commitCards([...S.cards]); return { moved, skipped };
+}
+let viewSet = '';
+function setScreen() {
+  const name = viewSet; let q = '', selecting = false; const picked = new Set();
+  const list = h('div'), bar = h('div'), head = h('div');
+  const rename = () => {
+    const inp = h('input', { value: viewSet, autocomplete: 'off' }); const e = h('p', { class: 'note' });
+    head.replaceChildren(h('label', { class: 'field' }, h('span', null, 'Set name'), inp), e, h('div', { class: 'actions' },
+      btn('Save', 'primary small', async () => { const r = await renameSet(viewSet, inp.value); if (r.error) { e.textContent = r.error; return; } viewSet = cleanText(inp.value); toast('Renamed'); go('set'); }),
+      btn('Cancel', 'small', draw))); inp.focus(); inp.select();
+  };
+  function moveSheet() {
+    const chosen = [...picked]; if (!chosen.length) return toast('Select some words first');
+    const others = setNames().filter(n => n !== viewSet), NEW = '__new__';
+    const sel = h('select', { onchange: () => { nw.hidden = sel.value !== NEW; } }, ...others.map(n => h('option', { value: n }, n)), h('option', { value: NEW }, '＋ New set…'));
+    const inp = h('input', { placeholder: 'New set name', autocomplete: 'off' }); const nw = h('label', { class: 'field' }, h('span', null, 'New set name'), inp); nw.hidden = sel.value !== NEW;
+    const e = h('p', { class: 'note' }); let close;
+    close = sheet(h('div', null, h('h2', null, `Move ${chosen.length} word${chosen.length === 1 ? '' : 's'}`), h('label', { class: 'field' }, h('span', null, 'To set'), sel), nw, e,
+      h('div', { class: 'actions' }, btn('Move', 'primary', async () => {
+        const r = await moveCards(chosen, sel.value === NEW ? inp.value : sel.value); if (r.error) { e.textContent = r.error; return; }
+        close(); picked.clear(); selecting = false;
+        toast(`Moved ${r.moved}` + (r.skipped.length ? `, skipped ${r.skipped.length} already there (${r.skipped.slice(0, 3).join(', ')}${r.skipped.length > 3 ? '…' : ''})` : '')); draw();
+      }), btn('Cancel', 'small', () => close()))));
+  }
+  function draw() {
+    const all = S.cards.filter(c => c.set === viewSet);
+    const shown = all.filter(c => !q || c.term.toLowerCase().includes(q) || c.def.toLowerCase().includes(q));
+    head.replaceChildren(h('div', { class: 'row between' }, h('h1', { style: { margin: 0 } }, viewSet), h('small', { class: 'muted' }, all.length + (all.length === 1 ? ' word' : ' words'))),
+      h('div', { class: 'actions' },
+        btn('＋ Add word', 'primary small', () => openWordEditor({ set: viewSet, after: draw })),
+        btn(selecting ? 'Done selecting' : 'Select', 'small', () => { selecting = !selecting; picked.clear(); draw(); }),
+        btn('Rename', 'small', rename), btn('Export .txt', 'small', () => exportSet(viewSet, 'txt')), btn('Export .tsv', 'small', () => exportSet(viewSet, 'tsv')),
+        btn('Delete set', 'bad small', async () => { if (!confirm(`Delete the set “${viewSet}” and its ${all.length} word${all.length === 1 ? '' : 's'}, with their progress?`)) return; await deleteCards(all, `Set “${viewSet}”`); go('library'); })));
+    bar.replaceChildren(...(selecting ? [h('div', { class: 'actions' },
+      btn(picked.size === shown.length && shown.length ? 'Clear' : 'Select all' + (q ? ' shown' : ''), 'small', () => { if (picked.size === shown.length) picked.clear(); else shown.forEach(c => picked.add(c)); draw(); }),
+      btn(`Move (${picked.size})…`, 'small', moveSheet),
+      btn(`Delete (${picked.size})`, 'bad small', async () => { if (!picked.size) return toast('Select some words first'); if (!confirm(`Delete ${picked.size} word${picked.size === 1 ? '' : 's'}, with their progress?`)) return; const g = [...picked]; picked.clear(); selecting = false; await deleteCards(g, `${g.length} word${g.length === 1 ? '' : 's'}`); draw(); }))] : []));
+    list.replaceChildren(...kids(all.length ? null : h('p', { class: 'muted' }, 'This set is empty. Tap “＋ Add word”.'), shown.length || !all.length ? null : h('p', { class: 'muted' }, 'No matches'),
+      shown.map(c => h('button', { class: 'item', onclick: () => { if (selecting) { picked.has(c) ? picked.delete(c) : picked.add(c); draw(); } else openWordEditor({ card: c, after: draw }); } },
+        selecting ? h('span', { style: { marginRight: '10px', fontSize: '1.2rem' } }, picked.has(c) ? '☑' : '☐') : null,
+        h('div', { class: 'grow' }, h('b', null, c.term), h('small', { class: 'muted' }, L.shortDef(c.def, 90))), h('span', { class: 'badge ' + L.stateOf(c) }, L.stateOf(c))))));
+  }
+  const search = h('input', { class: 'search', type: 'search', placeholder: 'Search this set', oninput: e => { q = e.target.value.toLowerCase(); draw(); } });
+  draw();
+  return h('div', { class: 'page' }, btn('‹ Library', 'small', () => go('library')), head, search, bar, list);
 }
 
 function libraryScreen() {
   let q = '', f = 'all', setF = 'all';
   const list = h('div');
+  const editSetBtn = btn('', 'small primary', () => { viewSet = setF; go('set'); }); editSetBtn.hidden = true;
   const setChips = h('div', { class: 'chips' });
   const filters = ['all', 'new', 'learning', 'reviewing', 'mastered', 'weak'];
   const chips = h('div', { class: 'chips' });
   const search = h('input', { class: 'search', type: 'search', placeholder: 'Search terms or meanings', oninput: e => { q = e.target.value.toLowerCase(); draw(); } });
   function draw() {
     const libSets = [...new Set(S.cards.map(c => c.set))].sort().reverse(); if (setF !== 'all' && !libSets.includes(setF)) setF = 'all';
+    editSetBtn.hidden = setF === 'all'; editSetBtn.textContent = 'Edit set “' + setF + '”';
     setChips.replaceChildren(...['all', ...libSets].map(x => h('button', { class: 'chip' + (setF === x ? ' on' : ''), onclick: () => { setF = x; draw(); } }, x === 'all' ? 'All sets' : x)));
     chips.replaceChildren(...filters.map(x => h('button', { class: 'chip' + (f === x ? ' on' : ''), onclick: () => { f = x; draw(); } }, x[0].toUpperCase() + x.slice(1))));
     const rows = S.cards.filter(c => (setF === 'all' || c.set === setF) && (!q || c.term.toLowerCase().includes(q) || c.def.toLowerCase().includes(q)) && (f === 'all' || (f === 'weak' ? L.isWeak(c) : L.stateOf(c) === f))).sort((a, b) => a.term.localeCompare(b.term));
@@ -982,7 +1043,7 @@ function libraryScreen() {
   draw();
   const refresh = () => go('library');
   return h('div', { class: 'page' }, h('h1', null, 'Library'),
-    h('div', { class: 'actions' }, btn('＋ Add word', 'primary small', () => openWordEditor({ set: setF === 'all' ? '' : setF, after: refresh })), btn('Manage sets', 'small', () => openSetManager(refresh))),
+    h('div', { class: 'actions' }, btn('＋ Add word', 'primary small', () => openWordEditor({ set: setF === 'all' ? '' : setF, after: refresh })), btn('Manage sets', 'small', () => openSetManager(refresh)), editSetBtn),
     search, setChips, chips, list);
 }
 

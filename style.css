@@ -208,3 +208,4 @@ html.locked #app{position:fixed;top:var(--vvtop,0px);left:50%;transform:translat
 .pmean .muted{font-weight:500;font-size:.9rem}
 .session .qcard.compact .big{font-size:1.5rem;line-height:1.15}
 .session .qcard.compact .big+.ptag{margin-top:2px}
+#toast .btn{background:#fff;color:#222;border-color:#fff;font-weight:700}
