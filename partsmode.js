@@ -95,24 +95,19 @@ function partFormOpts(p, n = 3) {
   }
   return out;
 }
-function partWordOpts(p, n = 3) {
-  const own = new Set(p.words.map(w => w.toLowerCase())), long = p.forms.filter(f => f.length >= 3);
-  const cands = L.shuffle(S.cards.filter(c => !own.has(c.term.toLowerCase()) && !long.some(f => c.term.toLowerCase().includes(f))));
-  return cands.slice(0, n).map(c => c.term);
-}
-
 /* ---------- questions ---------- */
 // Every question returns the options for renderMC or renderTyped. pass 1 = gentler, pass 2 = harder.
 function makePartQ(p, pass, typedOn) {
   const words = partWords(p);
   const w = words.length ? L.shuffle(words)[0] : null;
-  const kinds = pass === 1 ? [['p2m', 4], ['inword', 3], ['m2p', 1.5], ['word', 1.5]] : [['m2p', 3], ['word', 3], ['p2m', 2], ['inword', 2]];
-  const ok = kinds.filter(([k]) => w || (k !== 'inword' && k !== 'word'));
+  // (No "which word contains X?" kind: the answer is the only option that visibly spells the part, so it tests nothing.)
+  const kinds = pass === 1 ? [['p2m', 4], ['inword', 3], ['m2p', 1.5]] : [['m2p', 3], ['p2m', 2], ['inword', 2]];
+  const ok = kinds.filter(([k]) => w || k !== 'inword');
   let r = Math.random() * ok.reduce((a, [, x]) => a + x, 0), kind = ok[0][0];
   for (const [k, x] of ok) { if ((r -= x) < 0) { kind = k; break; } }
   const typed = typedOn && Math.random() < (pass === 1 ? .2 : .5);
   const extra = () => h('div', { class: 'vextra note' }, [p.origin, w ? 'e.g. ' + w.term : null].filter(Boolean).join(' · '));
-  if (typed && kind !== 'word' && kind !== 'inword') {
+  if (typed && kind !== 'inword') {
     if (kind === 'm2p') {
       const same = S.parts.filter(q => q.type === p.type && (q.key === p.key || (q.meaning.toLowerCase() === p.meaning.toLowerCase())));
       const accept = new Set(same.flatMap(q => q.forms.map(bareForm)));
@@ -127,7 +122,6 @@ function makePartQ(p, pass, typedOn) {
   }
   if (kind === 'p2m') return { label: 'Pick the meaning', prompt: h('div', null, h('div', { class: 'big' }, p.part), partTag(p)), options: [p.meaning, ...partMeaningOpts(p)], answer: p.meaning };
   if (kind === 'm2p') return { label: 'Pick the ' + p.type, prompt: h('div', { class: 'def' }, 'Which ' + p.type + ' means ', h('b', null, '“' + p.meaning + '”'), '?'), options: [p.part, ...partFormOpts(p)], answer: p.part };
-  if (kind === 'word') return { label: 'Pick the word', prompt: h('div', { class: 'def' }, 'Which word contains the ' + p.type + ' ', h('b', null, p.part), ' (“' + p.meaning + '”)?'), options: [w.term, ...partWordOpts(p)], answer: w.term };
   return { label: 'In “' + w.term + '”', prompt: h('div', { class: 'def' }, 'What does the ' + p.type + ' ', h('b', null, p.part), ' mean?'), options: [p.meaning, ...partMeaningOpts(p)], answer: p.meaning };
 }
 
@@ -217,9 +211,7 @@ function runPartQuiz(queue) {
     sh.progress(i, items.length);
     if (i >= items.length) return summary({ correct, total: items.length, missed, again: () => start('pQuiz') });
     const p = items[i], w = L.shuffle(partWords(p))[0];
-    const spec = Math.random() < .6
-      ? { label: 'In “' + w.term + '”', prompt: h('div', { class: 'def' }, 'What does the ' + p.type + ' ', h('b', null, p.part), ' mean?'), options: [p.meaning, ...partMeaningOpts(p)], answer: p.meaning }
-      : { label: 'Pick the word', prompt: h('div', { class: 'def' }, 'Which word contains the ' + p.type + ' ', h('b', null, p.part), ' (“' + p.meaning + '”)?'), options: [w.term, ...partWordOpts(p)], answer: w.term };
+    const spec = { label: 'In “' + w.term + '”', prompt: h('div', { class: 'def' }, 'What does the ' + p.type + ' ', h('b', null, p.part), ' mean?'), options: [p.meaning, ...partMeaningOpts(p)], answer: p.meaning };
     window.__lastPartQ = { key: p.key, typed: false, answer: spec.answer };
     renderMC(sh.body, {
       label: spec.label, prompt: spec.prompt, options: spec.options, answer: spec.answer,

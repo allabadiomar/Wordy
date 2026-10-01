@@ -27,7 +27,7 @@ const kids = (...a) => a.flat(Infinity).filter(k => k != null && k !== false);
 const btn = (label, cls, onclick, extra) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button', ...extra }, label);
 
 /* ---------- state ---------- */
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 const DEFAULTS = { newPer: 8, last: {}, apiKey: '', model: 'gemini-3.8-flash', fallbacks: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'] };
 const S = { cards: [], settings: { ...DEFAULTS }, meta: { log: {} } };
 
