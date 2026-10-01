@@ -296,9 +296,9 @@ Return JSON: {"verdict": "correct" | "partial" | "incorrect", "feedback": "1-2 s
 
 // Make sure cards have AI data, with a cancellable loading screen. Resolves true when ready.
 async function prepAI(cards, label) {
-  if (!AI.ready()) { toast('Add your Gemini API key in Settings first'); go('settings'); return false; }
   const missing = cards.filter(c => !c.ai);
   if (!missing.length) return true;
+  if (!AI.ready()) { toast('Add your Gemini API key in Settings first'); go('settings'); return false; }
   let cancelled = false;
   const msg = h('p', { class: 'muted center' }, 'Preparing ' + missing.length + ' words…');
   mount(h('div', { class: 'page center' }, h('h1', null, label), h('div', { class: 'spin' }), msg,
@@ -665,17 +665,18 @@ async function runRoots(queue) {
 
 async function runContext(queue) {
   if (!(await prepAI(queue, 'Context'))) return;
-  const items = queue.filter(c => c.ai && c.ai.sentence && L.blankOut(c.ai.sentence, c.term) !== c.ai.sentence);
+  const sentencesOf = c => ((c.ai && (c.ai.sentences && c.ai.sentences.length ? c.ai.sentences : [c.ai.sentence])) || []).filter(x => x && L.blankOut(x, c.term) !== x);
+  const items = queue.filter(c => sentencesOf(c).length);
   if (!items.length) { toast('No usable example sentences yet'); return go('home'); }
   const sh = shell('In context', items.length); let i = 0, correct = 0; const missed = [];
   function next() {
     sh.progress(i, items.length);
     if (i >= items.length) return summary({ correct, total: items.length, missed, again: () => start('context') });
-    const c = items[i];
+    const c = items[i], sent = L.shuffle(sentencesOf(c))[0];
     renderMC(sh.body, {
-      label: 'Fill in the blank', prompt: h('div', { class: 'def' }, L.blankOut(c.ai.sentence, c.term)),
+      label: 'Fill in the blank', prompt: h('div', { class: 'def' }, L.blankOut(sent, c.term)),
       options: [c.term, ...distractors(c, 3, x => x.term, (a, b) => a.ai && b.ai && a.ai.pos === b.ai.pos)], answer: c.term,
-      reveal: () => h('div', { class: 'card' }, h('div', null, c.ai.sentence), h('div', { class: 'note' }, c.term + ': ' + c.def)),
+      reveal: () => h('div', { class: 'card' }, h('div', null, sent), h('div', { class: 'note' }, c.term + ': ' + c.def)),
       onDone: ok => { record(c, ok ? 2 : 0, 'context'); if (ok) correct++; else missed.push(c); i++; next(); }
     });
   }
@@ -914,6 +915,20 @@ function settingsScreen() {
 }
 
 /* ---------- boot ---------- */
+// Attach the bundled word breakdowns to cards that have none (and whose definition still matches).
+function applyBundledAnalysis() {
+  if (typeof WORD_ANALYSIS !== 'object') return 0;
+  let n = 0;
+  for (const c of S.cards) {
+    const a = WORD_ANALYSIS[c.id];
+    if (c.ai || !a || a.def !== c.def) continue;
+    c.ai = { parts: a.parts, origin: a.origin, mnemonic: a.mnemonic, sentence: a.sentences[0], sentences: a.sentences, pos: a.pos, src: 'bundled' };
+    Store.saveCard(c); n++;
+  }
+  if (n) setTimeout(() => toast(`Word breakdowns added for ${n} words`), 800);
+  return n;
+}
+
 (async function boot() {
   await Store.init();
   S.settings = { ...DEFAULTS, ...(await Store.getKV('settings', {})) };
@@ -922,6 +937,7 @@ function settingsScreen() {
   if (!S.cards.length && typeof SEED_TEXT === 'string') {
     const r = L.mergeImport([], L.parseVocab(SEED_TEXT)); S.cards = r.cards; await Store.replaceAll(S.cards); setTimeout(() => toast(`Loaded ${r.added} terms`), 400);
   }
+  applyBundledAnalysis();
   go('home');
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   setTimeout(() => Pron.crawl(), 3000);
